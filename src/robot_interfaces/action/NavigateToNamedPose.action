@@ -1,0 +1,8 @@
+string target_name
+float32 timeout_sec
+---
+bool success
+string message
+---
+string current_state
+float32 progress
