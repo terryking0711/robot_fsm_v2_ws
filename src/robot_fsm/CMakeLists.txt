@@ -17,7 +17,10 @@ include_directories(include)
 add_executable(robot_fsm_main
   src/main.cpp
   src/mission/mission_controller.cpp
+  src/stages/stage2_clam_fsm.cpp
   src/stages/stage3_hay_fsm.cpp
+  src/stages/stage4_mazu_fsm.cpp
+  src/stages/stage5_new_fsm.cpp
 )
 
 ament_target_dependencies(robot_fsm_main

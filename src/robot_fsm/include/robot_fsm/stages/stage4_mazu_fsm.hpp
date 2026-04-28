@@ -2,12 +2,12 @@
 
 #include <memory>
 #include "robot_fsm/common/robot_context.hpp"
-#include "robot_fsm/stages/stage3_hay_states.hpp"
+#include "robot_fsm/stages/stage4_mazu_states.hpp"
 
-class Stage3HayFSM
+class Stage4MazuFSM
 {
 public:
-  explicit Stage3HayFSM(std::shared_ptr<RobotContext> ctx);
+  explicit Stage4MazuFSM(std::shared_ptr<RobotContext> ctx);
 
   bool tick();  // true = 整關完成, false = 尚未完成
 
@@ -15,6 +15,6 @@ private:
   bool wait_ticks(int required_ticks);
 
   std::shared_ptr<RobotContext> ctx_;
-  Stage3State state_;
+  Stage4State state_;
   int tick_count_;
 };

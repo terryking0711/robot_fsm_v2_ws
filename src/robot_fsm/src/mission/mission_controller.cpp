@@ -1,25 +1,24 @@
 #include "robot_fsm/mission/mission_controller.hpp"
+#include "robot_fsm/stages/stage2_clam_fsm.hpp"
 #include "robot_fsm/stages/stage3_hay_fsm.hpp"
+#include "robot_fsm/stages/stage4_mazu_fsm.hpp"
+#include "robot_fsm/stages/stage_common.hpp"
 
-// 任務控制器的實作
 MissionController::MissionController(std::shared_ptr<RobotContext> ctx)
 : ctx_(ctx),
   state_(MissionState::BOOT),
   nav_goal_sent_(false),
-  nav_done_(false),
-  nav_success_(false)
+  nav_start_time_(0, 0, RCL_ROS_TIME)
 {
+  stage2_fsm_ = std::make_shared<Stage2ClamFSM>(ctx_);
   stage3_fsm_ = std::make_shared<Stage3HayFSM>(ctx_);
+  stage4_fsm_ = std::make_shared<Stage4MazuFSM>(ctx_);
+  stage5_fsm_ = std::make_shared<Stage5NewFSM>(ctx_);
 }
 
-// 任務控制器的主循環，根據當前State執行對應行為
 bool MissionController::init_system()
 {
   RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] INIT");
-
-  ctx_->nav_client =
-    rclcpp_action::create_client<robot_interfaces::action::NavigateToNamedPose>(
-      ctx_->node, "navigate_to_named_pose");
 
   ctx_->mechanism_cmd_pub =
     ctx_->node->create_publisher<robot_interfaces::msg::MechanismCommand>(
@@ -31,8 +30,6 @@ bool MissionController::init_system()
 bool MissionController::self_check()
 {
   RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] SELF_CHECK");
-
-  // 初版先簡化成永遠成功
   return true;
 }
 
@@ -49,52 +46,28 @@ bool MissionController::wait_start()
 
 bool MissionController::leave_start_zone()
 {
-  return transition_to_named_pose("leave_start_zone", 10.0);
+  return transition_to_named_pose("leave_start_zone", 5.0);
 }
 
-bool MissionController::transition_to_named_pose(const std::string& target_name, float timeout_sec)
+// 模擬導航：第一次呼叫記錄起始時間，經過 NAV_SIM_DURATION_S 秒後回傳 true
+bool MissionController::transition_to_named_pose(const std::string& target_name, float /*timeout_sec*/)
 {
-  if (!ctx_->nav_client) {
-    RCLCPP_ERROR(ctx_->node->get_logger(), "[Mission] nav client not ready");
-    return false;
-  }
-
   if (!nav_goal_sent_) {
-    if (!ctx_->nav_client->wait_for_action_server(std::chrono::seconds(1))) {
-      RCLCPP_WARN(ctx_->node->get_logger(), "[Mission] nav server not ready");
-      return false;
-    }
-
-    robot_interfaces::action::NavigateToNamedPose::Goal goal;
-    goal.target_name = target_name;
-    goal.timeout_sec = timeout_sec;
-
-    auto options =
-      rclcpp_action::Client<robot_interfaces::action::NavigateToNamedPose>::SendGoalOptions();
-
-    options.result_callback =
-      [this](const auto& result) {
-        nav_done_ = true;
-        nav_success_ = result.result->success;
-      };
-
+    RCLCPP_INFO(ctx_->node->get_logger(),
+      "[Mission] navigating to '%s' (sim %.0fs)", target_name.c_str(), NAV_SIM_DURATION_S);
+    nav_start_time_ = ctx_->node->now();
     nav_goal_sent_ = true;
-    nav_done_ = false;
-    nav_success_ = false;
-    ctx_->nav_client->async_send_goal(goal, options);
-
     return false;
   }
 
-  if (!nav_done_) {
-    return false;
+  if ((ctx_->node->now() - nav_start_time_).seconds() >= NAV_SIM_DURATION_S) {
+    RCLCPP_INFO(ctx_->node->get_logger(),
+      "[Mission] nav to '%s' complete", target_name.c_str());
+    nav_goal_sent_ = false;
+    return true;
   }
 
-  bool result = nav_success_;
-  nav_goal_sent_ = false;
-  nav_done_ = false;
-  nav_success_ = false;
-  return result;
+  return false;
 }
 
 bool MissionController::finish_decision()
@@ -136,47 +109,50 @@ void MissionController::tick()
 
     case MissionState::LEAVE_START_ZONE:
       if (leave_start_zone()) {
+        state_ = MissionState::STAGE2_CLAM;
+      }
+      break;
+
+    case MissionState::STAGE2_CLAM:
+      if (stage2_fsm_->tick()) {
+        state_ = MissionState::TRANSITION_TO_STAGE3;
+      }
+      break;
+
+    case MissionState::TRANSITION_TO_STAGE3:
+      if (transition_to_named_pose("stage3_entry", 5.0)) {
         state_ = MissionState::STAGE3_HAY;
       }
       break;
 
     case MissionState::STAGE3_HAY:
       if (stage3_fsm_->tick()) {
-        state_ = MissionState::TRANSITION_3_TO_2;
+        state_ = MissionState::TRANSITION_TO_STAGE4;
       }
       break;
 
-    case MissionState::TRANSITION_3_TO_2:
-      if (transition_to_named_pose("stage2_entry", 15.0)) {
-        state_ = MissionState::STAGE2_CLAM;
-      }
-      break;
-
-    case MissionState::STAGE2_CLAM:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] STAGE2_CLAM placeholder");
-      state_ = MissionState::TRANSITION_2_TO_4;
-      break;
-
-    case MissionState::TRANSITION_2_TO_4:
-      if (transition_to_named_pose("stage4_entry", 15.0)) {
+    case MissionState::TRANSITION_TO_STAGE4:
+      if (transition_to_named_pose("stage4_entry", 5.0)) {
         state_ = MissionState::STAGE4_MAZU;
       }
       break;
 
     case MissionState::STAGE4_MAZU:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] STAGE4_MAZU placeholder");
-      state_ = MissionState::TRANSITION_4_TO_1;
-      break;
-
-    case MissionState::TRANSITION_4_TO_1:
-      if (transition_to_named_pose("stage1_entry", 15.0)) {
-        state_ = MissionState::STAGE1_WETLAND;
+      if (stage4_fsm_->tick()) {
+        state_ = MissionState::TRANSITION_TO_STAGE5;
       }
       break;
 
-    case MissionState::STAGE1_WETLAND:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] STAGE1_WETLAND placeholder");
-      state_ = MissionState::FINISH_DECISION;
+    case MissionState::TRANSITION_TO_STAGE5:
+      if (transition_to_named_pose("stage5_entry", 5.0)) {
+        state_ = MissionState::STAGE5_NEW;
+      }
+      break;
+
+    case MissionState::STAGE5_NEW:
+      if (stage5_fsm_->tick() == StageStatus::SUCCESS) {
+        state_ = MissionState::FINISH_DECISION;
+      }
       break;
 
     case MissionState::FINISH_DECISION:
@@ -193,7 +169,8 @@ void MissionController::tick()
       break;
 
     case MissionState::END_RUN:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] END_RUN");
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] END_RUN - 全部任務完成！");
+      rclcpp::shutdown();
       break;
 
     case MissionState::SAFE_STOP:
