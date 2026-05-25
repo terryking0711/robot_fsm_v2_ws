@@ -1,7 +1,5 @@
 #pragma once
 
-// 全域State, 使 MissionController和各個Stage的FSM都能共用
-// 使用時打 MissionState::BOOT
 enum class MissionState
 {
   BOOT,
@@ -10,13 +8,13 @@ enum class MissionState
   WAIT_START,
   LEAVE_START_ZONE,
 
+  STAGE1_WETLAND,
+  TRANSITION_TO_STAGE2,
+
   STAGE2_CLAM,
   TRANSITION_TO_STAGE3,
+
   STAGE3_HAY,
-  TRANSITION_TO_STAGE4,
-  STAGE4_MAZU,
-  TRANSITION_TO_STAGE5,
-  STAGE5_NEW,
 
   FINISH_DECISION,
   EARLY_STOP,

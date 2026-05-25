@@ -1,14 +1,17 @@
 #pragma once
 
 #include <memory>
+#include <string>
+
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 
 #include "robot_fsm/common/robot_context.hpp"
 #include "robot_fsm/mission/mission_states.hpp"
-#include "robot_fsm/stages/stage5_new_fsm.hpp"
 
+class Stage1WetlandFSM;
 class Stage2ClamFSM;
 class Stage3HayFSM;
-class Stage4MazuFSM;
 
 class MissionController
 {
@@ -25,16 +28,16 @@ private:
   bool transition_to_named_pose(const std::string& target_name, float timeout_sec);
   bool finish_decision();
 
-  std::shared_ptr<Stage2ClamFSM> stage2_fsm_;
-  std::shared_ptr<Stage3HayFSM> stage3_fsm_;
-  std::shared_ptr<Stage4MazuFSM> stage4_fsm_;
-  std::shared_ptr<Stage5NewFSM> stage5_fsm_;
-
   std::shared_ptr<RobotContext> ctx_;
   MissionState state_;
 
-  bool nav_goal_sent_;
-  rclcpp::Time nav_start_time_;
+  std::shared_ptr<Stage1WetlandFSM> stage1_fsm_;
+  std::shared_ptr<Stage2ClamFSM> stage2_fsm_;
+  std::shared_ptr<Stage3HayFSM> stage3_fsm_;
 
-  static constexpr double NAV_SIM_DURATION_S = 5.0;
+  bool nav_goal_sent_;
+  bool nav_done_;
+  bool nav_success_;
+  std::string nav_message_;
+  std::string nav_active_target_;
 };
