@@ -25,6 +25,6 @@ named_poses:
     yaw: 0.0
 
   stage3_stack_pose:
-    x: 3.7
-    y: 0.4
+    x: 6
+    y: 3
     yaw: 0.0
