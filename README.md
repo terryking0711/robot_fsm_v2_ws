@@ -11,7 +11,13 @@ ROS2 競賽機器人的任務控制主程式，採用有限狀態機（FSM）架
 整體架構以 **非阻塞式 FSM（Finite State Machine）** 為核心：主循環每 100ms 呼叫一次 `tick()`，每個 state 只執行一小步後立即返回，不阻塞 ROS 的訊息接收。感測資料（視覺、機構回饋、定位）透過 ROS topic 非同步更新至共享的 `RobotContext`，各關卡 FSM 從中讀取，實現感知與決策的乾淨分離。
 
 ---
-
+## 如何使用
+```
+1.開啟所有tdk_slam_ws需要的terminal(4個)
+2.開啟navigation_server
+3.ros2 run robot_fsm robot_fsm main  # 開啟主程式fsm
+4.ros2 topic echo /mechanism/command # 看到topic內容
+```
 ## 比賽流程
 
 ```
