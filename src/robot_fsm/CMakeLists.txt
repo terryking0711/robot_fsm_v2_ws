@@ -24,6 +24,10 @@ add_executable(robot_fsm_main
   src/stages/stage5_new_fsm.cpp
 )
 
+add_executable(stm_communication_node
+  src/communication/stm_communication_node.cpp
+)
+
 ament_target_dependencies(robot_fsm_main
   rclcpp
   rclcpp_action
@@ -32,8 +36,15 @@ ament_target_dependencies(robot_fsm_main
   robot_interfaces
 )
 
+ament_target_dependencies(stm_communication_node
+  rclcpp
+  geometry_msgs
+  robot_interfaces
+)
+
 install(TARGETS
   robot_fsm_main
+  stm_communication_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
