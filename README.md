@@ -261,3 +261,124 @@ bool MissionController::transition_to_named_pose(...) {
 | 機構控制 | 未接入 | ctx.latest_mechanism_feedback 預留 |
 
 詳細架構流程圖請見 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+## 實機測試的建議啟動順序
+
+### 1. LiDAR + Cartographer mapping
+
+```bash
+ros2 launch tdk_slam_manager spawn_launch.py localization_mode:=carto_mapping use_sim_time:=false
+```
+
+這之後先檢查：
+
+```bash
+ros2 topic echo /front/scan --once
+ros2 topic echo /rear/scan --once
+ros2 topic echo /scan --once
+```
+
+---
+
+### 2. Teleop + command bridge
+
+```bash
+ros2 launch robot_fsm teleop_mapping.launch.py
+```
+
+資料流應該是：
+
+```text
+/teleop/cmd_vel
+→ /mecanum/cmd_vel
+→ STM32 micro-ROS
+```
+
+檢查：
+
+```bash
+ros2 topic echo /teleop/cmd_vel
+ros2 topic echo /mecanum/cmd_vel
+```
+
+---
+
+### 3. 建圖並記錄三個點
+
+開到起點外一點：
+
+```bash
+ros2 service call /save_named_pose robot_interfaces/srv/SaveNamedPose "{name: 'leave_start_zone'}"
+```
+
+開到第一任務點：
+
+```bash
+ros2 service call /save_named_pose robot_interfaces/srv/SaveNamedPose "{name: 'stage1_entry'}"
+```
+
+開到第二任務點：
+
+```bash
+ros2 service call /save_named_pose robot_interfaces/srv/SaveNamedPose "{name: 'stage2_entry'}"
+```
+
+---
+
+### 4. 存 Cartographer map
+
+統一存成：
+
+```text
+real_map_0.pbstream
+real_map_0.yaml
+real_map_0.pgm
+```
+
+---
+
+### 5. 回起點框框
+
+手動把車開回原點框框，車頭對準 (yaw = 0)。
+
+---
+
+### 6. 開 Cartographer localization
+
+```bash
+ros2 launch tdk_slam_manager spawn_launch.py localization_mode:=cartographer use_sim_time:=false
+```
+
+---
+
+### 7. 開 Nav2
+
+```bash
+ros2 launch tdk_nav2_manager nav_launch.py use_sim_time:=false
+```
+
+如果你已把 map 預設改成 `real_map_0.yaml`，就不用再傳 `map:=...`。
+
+---
+
+### 8. 開正式 cmd bridge
+
+```bash
+ros2 launch robot_fsm nav_cmd_bridge.launch.py
+```
+
+---
+
+### 9. 開 navigation server
+
+```bash
+ros2 launch robot_navigation navigation_server.launch.py
+```
+
+---
+
+### 10. 開 FSM
+
+```bash
+ros2 run robot_fsm robot_fsm_main
+```
