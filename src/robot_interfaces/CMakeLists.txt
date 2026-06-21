@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MechanismFeedback.msg"
   "msg/VisionSceneState.msg"
   "msg/StageResult.msg"
+  "srv/SaveNamedPose.srv"
   DEPENDENCIES action_msgs std_msgs geometry_msgs
 )
 
