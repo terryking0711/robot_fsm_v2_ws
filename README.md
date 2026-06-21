@@ -89,44 +89,38 @@ ros2 run robot_fsm robot_fsm_main
 [Mission] END_RUN - 全部任務完成！
 ```
 ---
-## 測試和其他workspace通訊
 ### Terminal(robot_fsm_v2_ws) 5 - 開啟 Navigation server
 ```bash
 source install/setup.bash
-
 ros2 launch robot_navigation navigation_server.launch.py
 ```
 
-### 測試兩個navigation_server
+### Gazabo 測試模式
+導航 server
+```bash
+source install/setup.bash
+ros2 launch robot_navigation navigation_server.launch.py
 ```
-ros2 action send_goal /navigate_to_named_pose robot_interfaces/action/NavigateToNamedPose "{target_name: 'stage1_entry', timeout_sec: 60.0}" --feedback
+鍵盤開車(/teleop/cmd_vel)
+```bash
+source install/setup.bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args \
+  -r /cmd_vel:=/teleop/cmd_vel \
+  -p repeat_rate:=20.0 \
+  -p key_timeout:=0.3
 ```
-### 測試基本通訊
+將 /teleop/cmd_vel 接到 /cmd_vel
+```bash
+source install/setup.bash
+ros2 run robot_fsm stm_communication_node --ros-args \
+  -p input_cmd_vel_topic:=/teleop/cmd_vel \
+  -p output_cmd_vel_topic:=/cmd_vel \
+  -p cmd_vel_rate_hz:=20.0 \
+  -p cmd_vel_stale_timeout_sec:=0.5
 ```
-# 1. 確認 ROS_DOMAIN_ID
-echo $ROS_DOMAIN_ID
-
-# 2. 確認 RMW
-echo $RMW_IMPLEMENTATION
-
-# 3. 確認網路模式（在 host 機器跑）
-docker inspect tdk_slam --format='{{.HostConfig.NetworkMode}}'
-docker inspect ros2_projects --format='{{.HostConfig.NetworkMode}}'
-
-# 4. 測試 topic 互通（tdk_slam 發）
-ros2 topic pub /test std_msgs/msg/String "data: 'hello'"
-
-# 5. 測試 topic 互通（ros2_projects 收）
-ros2 topic echo /test
-
-# 6. 確認 Nav2 action server 存在
-ros2 action list
-
-# 7. 確認 bt_navigator 正常
-ros2 action info /navigate_to_pose
-
-# 8. 直接 call Nav2 測試
-ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose "{pose: {header: {frame_id: 'map'}, pose: {position: {x: 1.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}}"
+資料流
+```
+teleop → /teleop/cmd_vel → stm_communication_node → /cmd_vel → Gazebo mecanum_drive
 ```
 ---
 
