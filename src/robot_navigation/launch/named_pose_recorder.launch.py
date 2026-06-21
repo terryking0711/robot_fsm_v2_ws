@@ -1,3 +1,6 @@
+# ros2 launch robot_navigation named_pose_recorder.launch.py \
+# named_poses_file:=/home/tdk/robot_fsm_v2_ws/src/robot_navigation/config/named_poses.yaml
+
 import os
 
 from ament_index_python.packages import get_package_share_directory
