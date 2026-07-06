@@ -10,6 +10,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -32,6 +33,7 @@ ament_target_dependencies(navigation_server
   rclcpp_action
   geometry_msgs
   nav2_msgs
+  std_srvs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -71,10 +73,6 @@ install(DIRECTORY launch/
 
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
-)
-
-install(DIRECTORY launch/
-  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 ament_package()

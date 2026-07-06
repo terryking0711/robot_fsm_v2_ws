@@ -11,7 +11,9 @@ MissionController::MissionController(std::shared_ptr<RobotContext> ctx)
   nav_done_(false),
   nav_success_(false),
   nav_message_(""),
-  nav_active_target_("")
+  nav_active_target_(""),
+  nav_retry_count_(0),
+  nav_backoff_ticks_(0)
 {
   stage1_fsm_ = std::make_shared<Stage1WetlandFSM>(ctx_);
   stage2_fsm_ = std::make_shared<Stage2ClamFSM>(ctx_);
@@ -26,6 +28,7 @@ bool MissionController::init_system()
     ctx_->node->create_publisher<robot_interfaces::msg::MechanismCommand>(
       "/mechanism/command", 10);
 
+  // 只建立一次 client，之後全程重用（重建 client 會造成 goal 遺失/失敗迴圈）
   ctx_->nav_client =
     rclcpp_action::create_client<robot_interfaces::action::NavigateToNamedPose>(
       ctx_->node,
@@ -74,6 +77,12 @@ bool MissionController::transition_to_named_pose(
     return false;
   }
 
+  // 失敗後的退避期：先消化 backoff ticks，再允許重送
+  if (nav_backoff_ticks_ > 0) {
+    nav_backoff_ticks_--;
+    return false;
+  }
+
   if (!nav_goal_sent_) {
     if (!ctx_->nav_client->wait_for_action_server(std::chrono::seconds(1))) {
       RCLCPP_WARN(
@@ -94,10 +103,27 @@ bool MissionController::transition_to_named_pose(
 
     RCLCPP_INFO(
       ctx_->node->get_logger(),
-      "[Mission] send navigation goal: %s",
-      target_name.c_str());
+      "[Mission] send navigation goal: %s (attempt %d)",
+      target_name.c_str(),
+      nav_retry_count_ + 1);
 
     auto options = rclcpp_action::Client<NavigateAction>::SendGoalOptions();
+
+    // navigation_server 對未知 pose name 會直接 REJECT goal，
+    // 這裡要接住 goal_response，否則 FSM 會永遠卡在 nav_done_ = false。
+    options.goal_response_callback =
+      [this](rclcpp_action::ClientGoalHandle<NavigateAction>::SharedPtr goal_handle)
+      {
+        if (!goal_handle) {
+          nav_done_ = true;
+          nav_success_ = false;
+          nav_message_ = "goal rejected by navigation_server (unknown pose name?)";
+
+          RCLCPP_ERROR(
+            ctx_->node->get_logger(),
+            "[Mission][NavResponse] %s", nav_message_.c_str());
+        }
+      };
 
     options.feedback_callback =
       [this](
@@ -116,15 +142,19 @@ bool MissionController::transition_to_named_pose(
       {
         nav_done_ = true;
 
+        // navigation_server 現在使用正確的 action 語意：
+        //   成功 -> SUCCEEDED、失敗/逾時 -> ABORTED、取消 -> CANCELED。
+        // 三種終態的 result->message 都有內容，一律讀出來方便除錯。
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
           nav_success_ = result.result->success;
           nav_message_ = result.result->message;
-        } else if (result.code == rclcpp_action::ResultCode::CANCELED) {
-          nav_success_ = false;
-          nav_message_ = "navigation goal canceled";
         } else {
           nav_success_ = false;
-          nav_message_ = "navigation goal aborted";
+          nav_message_ = result.result
+            ? result.result->message
+            : (result.code == rclcpp_action::ResultCode::CANCELED
+                ? "navigation goal canceled"
+                : "navigation goal aborted");
         }
 
         RCLCPP_INFO(
@@ -150,12 +180,31 @@ bool MissionController::transition_to_named_pose(
       ctx_->node->get_logger(),
       "[Mission] navigation to '%s' complete",
       nav_active_target_.c_str());
+
+    nav_retry_count_ = 0;
+    nav_backoff_ticks_ = 0;
   } else {
+    nav_retry_count_++;
+    nav_backoff_ticks_ = kNavBackoffTicks;
+
     RCLCPP_ERROR(
       ctx_->node->get_logger(),
-      "[Mission] navigation to '%s' failed: %s",
+      "[Mission] navigation to '%s' failed (attempt %d): %s -- retry in %.1f s",
       nav_active_target_.c_str(),
-      nav_message_.c_str());
+      nav_retry_count_,
+      nav_message_.c_str(),
+      kNavBackoffTicks / 10.0);
+
+    if (nav_retry_count_ >= kNavMaxRetryWarn) {
+      RCLCPP_ERROR(
+        ctx_->node->get_logger(),
+        "[Mission] navigation to '%s' failed %d times in a row. "
+        "Check: (1) Cartographer localization / initial pose, "
+        "(2) named_poses.yaml target inside map & free space, "
+        "(3) Nav2 lifecycle nodes all active.",
+        nav_active_target_.c_str(),
+        nav_retry_count_);
+    }
   }
 
   nav_goal_sent_ = false;

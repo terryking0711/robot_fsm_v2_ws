@@ -40,4 +40,12 @@ private:
   bool nav_success_;
   std::string nav_message_;
   std::string nav_active_target_;
+
+  // 導航失敗後的重送退避：
+  // 失敗後等 nav_backoff_ticks_ 個 tick（tick=10Hz，20 ticks = 2 秒）
+  // 再重送 goal，避免 Nav2 還在 recovery 時被連續洗 goal。
+  int nav_retry_count_;
+  int nav_backoff_ticks_;
+  static constexpr int kNavBackoffTicks = 20;
+  static constexpr int kNavMaxRetryWarn = 3;
 };
