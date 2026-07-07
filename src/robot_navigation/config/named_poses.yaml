@@ -16,18 +16,18 @@ named_poses:
     yaw: 0.0
 
   stage1_entry:
-    x: 3.425
-    y: 1.0
+    x: 0.425
+    y: 3.0
     yaw: 0.0
 
   stage2_entry:
     x: 3.425
     y: 3.0
-    yaw: 0.0
+    yaw: 3.14159
 
   stage3_entry:
-    x: 0.0
-    y: 0.0
+    x: 5.425
+    y: 3.0
     yaw: 0.0
 
   stage3_pick_pose:
