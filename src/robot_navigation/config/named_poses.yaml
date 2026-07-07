@@ -15,7 +15,7 @@ named_poses:
   #   y: 1.0
   #   yaw: 0.0
 
-    leave_start_zone:
+  leave_start_zone:
     x: 0.0
     y: 0.0
     yaw: 0.0
