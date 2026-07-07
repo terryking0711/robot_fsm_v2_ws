@@ -28,7 +28,7 @@ named_poses:
   stage2_entry:
     x: 4.425
     y: 1.0
-    yaw: 3.14159
+    yaw: 0.0
 
   stage3_entry:
     x: 0.0
