@@ -1,14 +1,52 @@
 #include <memory>
 #include <thread>
+#include <vector>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/u_int8.hpp>
 
 #include "robot_fsm/common/robot_context.hpp"
 #include "robot_fsm/mission/mission_controller.hpp"
 #include "robot_interfaces/msg/mechanism_feedback.hpp"
 #include "robot_interfaces/msg/vision_scene_state.hpp"
+
+namespace
+{
+
+// 從 ROS parameter 載入場地定位點（world frame，[x, y, yaw]）。
+// 可用 launch/yaml 覆蓋，不需重編。
+Pose2D load_pose_param(
+  const rclcpp::Node::SharedPtr& node,
+  const std::string& name,
+  const std::vector<double>& default_xyyaw)
+{
+  node->declare_parameter(name, default_xyyaw);
+  const auto v = node->get_parameter(name).as_double_array();
+
+  Pose2D p;
+  if (v.size() == 3) {
+    p.x = v[0];
+    p.y = v[1];
+    p.yaw = v[2];
+  } else {
+    RCLCPP_ERROR(
+      node->get_logger(),
+      "parameter '%s' must be [x, y, yaw], fallback to default", name.c_str());
+    p.x = default_xyyaw[0];
+    p.y = default_xyyaw[1];
+    p.yaw = default_xyyaw[2];
+  }
+
+  RCLCPP_INFO(
+    node->get_logger(),
+    "field pose '%s' (world): [%.3f, %.3f, %.3f]", name.c_str(), p.x, p.y, p.yaw);
+  return p;
+}
+
+}  // namespace
 
 int main(int argc, char** argv)
 {
@@ -20,6 +58,17 @@ int main(int argc, char** argv)
   // 建立共享的 robot context(包含最新的感知和機構狀態)
   auto ctx = std::make_shared<RobotContext>();
   ctx->node = ros_node;
+
+  // ------------------------------------------------------------------
+  // 場地定位點（world frame，場地最左下角為 (0,0)）
+  // "start" 預設 = map 原點在 world 的位置 (0.425, 1.0, 0.0)。
+  // TODO: reset_stage1~4 為佔位值，實際重置點座標量測後用 launch/yaml 覆蓋。
+  // ------------------------------------------------------------------
+  ctx->field_poses["start"] = load_pose_param(ros_node, "start_pose", {0.425, 1.0, 0.0});
+  ctx->field_poses["reset_stage1"] = load_pose_param(ros_node, "reset_pose_stage1", {0.425, 1.0, 0.0});
+  ctx->field_poses["reset_stage2"] = load_pose_param(ros_node, "reset_pose_stage2", {0.425, 1.0, 0.0});
+  ctx->field_poses["reset_stage3"] = load_pose_param(ros_node, "reset_pose_stage3", {0.425, 1.0, 0.0});
+  ctx->field_poses["reset_stage4"] = load_pose_param(ros_node, "reset_pose_stage4", {0.425, 1.0, 0.0});
 
   // topic = /vision/scene_state 還沒創立 publisher
   auto vision_sub =
@@ -47,11 +96,32 @@ int main(int argc, char** argv)
         std::scoped_lock lock(ctx->data_mutex);
         ctx->latest_final_pose = *msg;
       });
-  
+
+  // localization_manager 的初始化結果回報
+  auto init_status_sub =
+    ros_node->create_subscription<std_msgs::msg::Bool>(
+      "/init_pose_status", 10,
+      [ctx](const std_msgs::msg::Bool::SharedPtr msg) {
+        ctx->init_status_received = true;
+        ctx->init_status_ok = msg->data;
+      });
+
+  // 場外重置請求：隊員將機器人搬到第 N 關重置點後，發布：
+  //   ros2 topic pub --once /reset_cmd std_msgs/msg/UInt8 "{data: 2}"
+  auto reset_sub =
+    ros_node->create_subscription<std_msgs::msg::UInt8>(
+      "/reset_cmd", 10,
+      [ctx](const std_msgs::msg::UInt8::SharedPtr msg) {
+        RCLCPP_WARN(
+          ctx->node->get_logger(),
+          "[Main] reset request received: stage %u", msg->data);
+        ctx->pending_reset_stage = msg->data;
+      });
+
   // 建立任務控制器，並將 robot context 傳入
   MissionController mission(ctx);
 
-  // 先模擬比賽開始的signal，ㄍ先用五秒代替
+  // 先模擬比賽開始的signal，先用五秒代替
   std::thread starter([ctx]() {
     std::this_thread::sleep_for(std::chrono::seconds(5));
     ctx->start_signal = true;

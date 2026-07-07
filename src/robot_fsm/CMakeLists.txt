@@ -10,6 +10,8 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
 
 include_directories(include)
@@ -33,6 +35,8 @@ ament_target_dependencies(robot_fsm_main
   rclcpp_action
   std_msgs
   geometry_msgs
+  tf2
+  tf2_geometry_msgs
   robot_interfaces
 )
 

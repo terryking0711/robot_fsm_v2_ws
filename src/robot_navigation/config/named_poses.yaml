@@ -1,30 +1,41 @@
+# ============================================================================
+# named poses（導航目標點）
+#
+# ⚠ 座標系已從 map frame 改為 world frame（場地最左下角為 (0,0)）。
+#    navigation_server 會把 goal 的 frame_id 設為 "world"，
+#    Nav2 planner_server 透過 world -> map 靜態 TF 自動轉換。
+#
+# 換算關係：world = map + (0.425, 1.0)，yaw 不變。
+# 以下數值是把原本 map frame 的佔位值直接加上偏移換算而來，
+# 實際比賽點位量測後再更新。
+# ============================================================================
 named_poses:
   leave_start_zone:
-    x: 0.0
-    y: 0.0
+    x: 0.425
+    y: 1.0
     yaw: 0.0
 
   stage1_entry:
-    x: 0.0
-    y: 2.0
+    x: 0.425
+    y: 3.0
     yaw: 0.0
 
   stage2_entry:
-    x: 3.0
-    y: 2.0
+    x: 3.425
+    y: 3.0
     yaw: 3.14159
 
   stage3_entry:
-    x: 5.0
-    y: 2.0
+    x: 5.425
+    y: 3.0
     yaw: 0.0
 
   stage3_pick_pose:
-    x: 5.0
-    y: 3.0
+    x: 5.425
+    y: 4.0
     yaw: 1.5708
 
   stage3_stack_pose:
-    x: 0.0
-    y: 0.0
+    x: 0.425
+    y: 1.0
     yaw: 0.0
