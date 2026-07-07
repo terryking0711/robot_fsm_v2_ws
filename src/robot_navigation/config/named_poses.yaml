@@ -10,24 +10,29 @@
 # 實際比賽點位量測後再更新。
 # ============================================================================
 named_poses:
-  leave_start_zone:
-    x: 0.425
-    y: 1.0
+  # leave_start_zone:
+  #   x: 0.425
+  #   y: 1.0
+  #   yaw: 0.0
+
+    leave_start_zone:
+    x: 0.0
+    y: 0.0
     yaw: 0.0
 
   stage1_entry:
     x: 0.425
-    y: 3.0
+    y: 1.0
     yaw: 0.0
 
   stage2_entry:
-    x: 3.425
-    y: 3.0
+    x: 4.425
+    y: 1.0
     yaw: 3.14159
 
   stage3_entry:
-    x: 5.425
-    y: 3.0
+    x: 0.0
+    y: 0.0
     yaw: 0.0
 
   stage3_pick_pose:
