@@ -490,7 +490,7 @@ void MissionController::tick()
           state_ = MissionState::WAIT_START;
           break;
         case LocalizeResult::FAILURE:
-          state_ = MissionState::SAFE_STOP;
+          state_ = MissionState::WAIT_START;  
           break;
         case LocalizeResult::RUNNING:
         default:

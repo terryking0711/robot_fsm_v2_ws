@@ -40,6 +40,7 @@ private:
   std::string nav_active_target_;
   int nav_retry_count_;
   int nav_backoff_ticks_;
+  bool nav_arrived_;
   static constexpr int kNavBackoffTicks = 20;
   static constexpr int kNavMaxRetryWarn = 3;
 };

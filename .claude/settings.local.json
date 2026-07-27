@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash -lc \"source /opt/ros/*/setup.bash 2>/dev/null; colcon build --packages-select robot_fsm 2>&1 | tail -80\")"
+    ]
+  }
+}

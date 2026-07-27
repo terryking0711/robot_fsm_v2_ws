@@ -13,7 +13,8 @@ Stage2ClamFSM::Stage2ClamFSM(std::shared_ptr<RobotContext> ctx)
   nav_message_(""),
   nav_active_target_(""),
   nav_retry_count_(0),
-  nav_backoff_ticks_(0)
+  nav_backoff_ticks_(0),
+  nav_arrived_(false)
 {
 }
 
@@ -32,6 +33,7 @@ void Stage2ClamFSM::enter_state(Stage2State next_state)
   state_ = next_state;
   tick_count_ = 0;
   state_command_sent_ = false;
+  nav_arrived_ = false;
 }
 
 bool Stage2ClamFSM::navigate_to_named_pose(
@@ -215,20 +217,19 @@ bool Stage2ClamFSM::tick()
 
     case Stage2State::S2_ENTER:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ENTER 第二關");
-      publish_state_command(201, "S2_ENTER", "stage2_enter");
+      wait_ticks(3);
       enter_state(Stage2State::S2_APPROACH);
       return false;
 
     case Stage2State::S2_APPROACH:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] APPROACH 靠近蛤蜊");
-      publish_state_command(202, "S2_APPROACH", "approach_clam_area");
-      if (wait_ticks(10)) enter_state(Stage2State::S2_EXTEND_ARM);
+      enter_state(Stage2State::S2_EXTEND_ARM);
       return false;
 
     case Stage2State::S2_EXTEND_ARM:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] EXTEND_ARM 伸出手臂");
-      publish_state_command(203, "S2_EXTEND_ARM", "extend_arm");
-      if (wait_ticks(10)) enter_state(Stage2State::S2_PUSH_CLAM);
+      publish_state_command(101, "S2_EXTEND_ARM", "extend_arm");
+      if (wait_ticks(5)) enter_state(Stage2State::S2_PUSH_CLAM);
       return false;
 
     case Stage2State::S2_PUSH_CLAM:
@@ -239,37 +240,51 @@ bool Stage2ClamFSM::tick()
         nav_arrived_ = true;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] PUSH_CLAM 將蛤蜊推入箱中");
-      publish_state_command(204, "S2_PUSH_CLAM", "push_clam");
-      if (wait_ticks(10)) enter_state(Stage2State::S2_RETRACT_ARM);
+      enter_state(Stage2State::S2_RETRACT_ARM);
       return false;
 
     case Stage2State::S2_RETRACT_ARM:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM 收回手臂");
-      publish_state_command(205, "S2_RETRACT_ARM", "retract_arm");
-      if (wait_ticks(10)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
+      publish_state_command(102, "S2_RETRACT_ARM", "retract_arm");
+      if (wait_ticks(5)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
       return false;
 
     case Stage2State::S2_MOVE_FORWARD_ALIGN:
+      if (!nav_arrived_) {
+        if (!navigate_to_named_pose("stage2_push_clam", 15.0f)) {
+          return false;
+        }
+        nav_arrived_ = true;
+      }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_FORWARD_ALIGN 前進並對齊箱子");
-      publish_state_command(206, "S2_MOVE_FORWARD_ALIGN", "move_forward_align");
-      if (wait_ticks(10)) enter_state(Stage2State::S2_ROTATE_BOX);
+      enter_state(Stage2State::S2_ROTATE_BOX);
       return false;
 
     case Stage2State::S2_ROTATE_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX 翻轉箱子");
-      publish_state_command(207, "S2_ROTATE_BOX", "rotate_box");
+      publish_state_command(201, "S2_ROTATE_BOX", "rotate_box");
       if (wait_ticks(10)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
       return false;
 
     case Stage2State::S2_MOVE_TO_RETURN:
+      if (!nav_arrived_) {
+        if (!navigate_to_named_pose("stage2_return_point", 15.0f)) {
+          return false;
+        }
+        nav_arrived_ = true;
+      }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_TO_RETURN 移動至返回點");
-      publish_state_command(208, "S2_MOVE_TO_RETURN", "move_to_return");
-      if (wait_ticks(10)) enter_state(Stage2State::S2_DONE);
+      enter_state(Stage2State::S2_DROP_BOX);
       return false;
-
+    
+    case Stage2State::S2_DROP_BOX:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DROP_BOX 放下箱子");
+      publish_state_command(202, "S2_DROP_BOX", "drop_box");
+      if (wait_ticks(3)) enter_state(Stage2State::S2_DONE);
+      return false;
+    
     case Stage2State::S2_DONE:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DONE 第二關完成");
-      publish_state_command(210, "S2_DONE", "stage2_done");
       return true;
   }
 

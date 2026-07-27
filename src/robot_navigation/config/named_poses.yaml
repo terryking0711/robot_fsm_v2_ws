@@ -15,11 +15,13 @@ named_poses:
     y: 1.0
     yaw: 0.0
 
+  # 第一關
   stage1_entry:
     x: 0.425
     y: 3.0
     yaw: 0.0
 
+  # 第二關
   stage2_entry:
     x: 0.425
     y: 3.0
@@ -30,6 +32,17 @@ named_poses:
     y: 3.0
     yaw: 0.0
 
+  stage2_move_forward_align:
+    x: 1.225
+    y: 3.0
+    yaw: 0.0
+
+  stage2_return_point:
+    x: 1.225
+    y: 3.0
+    yaw: 0.0
+
+  # 第三關
   stage3_entry:
     x: 3.425
     y: 3.0
