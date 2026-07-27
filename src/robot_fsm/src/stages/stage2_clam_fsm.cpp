@@ -232,6 +232,12 @@ bool Stage2ClamFSM::tick()
       return false;
 
     case Stage2State::S2_PUSH_CLAM:
+      if (!nav_arrived_) {
+        if (!navigate_to_named_pose("stage2_push_clam", 15.0f)) {
+          return false;
+        }
+        nav_arrived_ = true;
+      }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] PUSH_CLAM 將蛤蜊推入箱中");
       publish_state_command(204, "S2_PUSH_CLAM", "push_clam");
       if (wait_ticks(10)) enter_state(Stage2State::S2_RETRACT_ARM);
