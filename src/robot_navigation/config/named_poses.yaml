@@ -25,6 +25,11 @@ named_poses:
     y: 3.0
     yaw: 0.0
 
+  stage2_push_clam:
+    x: 0.925
+    y: 3.0
+    yaw: 0.0
+
   stage3_entry:
     x: 3.425
     y: 3.0
