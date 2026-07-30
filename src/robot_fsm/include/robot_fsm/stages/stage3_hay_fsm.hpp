@@ -38,6 +38,7 @@ private:
   std::string nav_active_target_;
   int nav_retry_count_;
   int nav_backoff_ticks_;
+  bool nav_arrived_;   // 本 state 的導航是否已完成（同 Stage2 的用法）
   static constexpr int kNavBackoffTicks = 20;
   static constexpr int kNavMaxRetryWarn = 3;
 };

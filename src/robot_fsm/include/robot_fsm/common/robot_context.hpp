@@ -33,6 +33,15 @@ struct RobotContext
 
   rclcpp::Node::SharedPtr node;
 
+  // ---- 導航總開關 ----
+  // 由 main.cpp 從 ROS parameter "enable_navigation" 載入（預設 true）。
+  //   true  : 正常啟用導航與定位（需要 navigation_server / Nav2 /
+  //           localization_manager 都有跑）
+  //   false : 所有導航步驟直接視為已抵達、定位直接視為成功，
+  //           FSM 只跑機構流程。用於單獨測試機構。
+  // 只在啟動時讀一次，執行中不會變動。
+  bool enable_navigation = true;
+
   // Navigation
   NavigateClient::SharedPtr nav_client;
 

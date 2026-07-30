@@ -1,5 +1,10 @@
 #include "robot_fsm/mission/mission_controller.hpp"
 
+#include <cmath>
+
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
 #include "robot_fsm/stages/stage1_wetland_fsm.hpp"
 #include "robot_fsm/stages/stage2_clam_fsm.hpp"
 #include "robot_fsm/stages/stage3_hay_fsm.hpp"
@@ -103,12 +108,95 @@ void MissionController::reset_localize_bookkeeping()
 
 LocalizeResult MissionController::localize_at(const Pose2D& target_world)
 {
-  // 定位功能已停用（僅保留任務機構流程），直接視為成功並跳過。
-  (void)target_world;
-  RCLCPP_INFO(
-    ctx_->node->get_logger(),
-    "[Mission][Localize] localization disabled, skip");
-  return LocalizeResult::SUCCESS;
+  // ---- 導航總開關（RobotContext::enable_navigation）----
+  // 與導航共用同一個開關：false 時不對 localization_manager 送
+  // /init_pose_cmd，直接視為定位成功。
+  if (!ctx_->enable_navigation) {
+    RCLCPP_INFO(
+      ctx_->node->get_logger(),
+      "[Mission][Localize] navigation disabled, skip localization");
+    return LocalizeResult::SUCCESS;
+  }
+
+  // 1) 尚未送出指令：送出 /init_pose_cmd（world frame）
+  if (!loc_cmd_sent_) {
+    // 清掉舊的 status，避免吃到上一輪殘留的回報
+    ctx_->init_status_received = false;
+    ctx_->init_status_ok = false;
+
+    geometry_msgs::msg::PoseStamped msg;
+    msg.header.stamp = ctx_->node->get_clock()->now();
+    msg.header.frame_id = "world";
+    msg.pose.position.x = target_world.x;
+    msg.pose.position.y = target_world.y;
+
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, target_world.yaw);
+    msg.pose.orientation = tf2::toMsg(q);
+
+    ctx_->init_cmd_pub->publish(msg);
+
+    loc_cmd_sent_ = true;
+    loc_wait_ticks_ = 0;
+
+    RCLCPP_INFO(
+      ctx_->node->get_logger(),
+      "[Mission][Localize] send init cmd (world): [%.3f, %.3f, %.3f] (attempt %d)",
+      target_world.x, target_world.y, target_world.yaw,
+      loc_retry_count_ + 1);
+
+    return LocalizeResult::RUNNING;
+  }
+
+  // 2) 收到 localization_manager 回報
+  if (ctx_->init_status_received) {
+    const bool ok = ctx_->init_status_ok;
+    ctx_->init_status_received = false;
+    loc_cmd_sent_ = false;
+
+    if (ok) {
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Mission][Localize] localization SUCCESS");
+      loc_retry_count_ = 0;
+      return LocalizeResult::SUCCESS;
+    }
+
+    loc_retry_count_++;
+    RCLCPP_WARN(
+      ctx_->node->get_logger(),
+      "[Mission][Localize] localization failed (attempt %d/%d), resend",
+      loc_retry_count_, kLocMaxRetries);
+
+    if (loc_retry_count_ >= kLocMaxRetries) {
+      RCLCPP_ERROR(
+        ctx_->node->get_logger(),
+        "[Mission][Localize] exceeded max retries (%d). "
+        "Check: (1) cartographer_node up? (2) robot placed near target pose? "
+        "(3) world->map offset consistent?",
+        kLocMaxRetries);
+      loc_retry_count_ = 0;
+      return LocalizeResult::FAILURE;
+    }
+    return LocalizeResult::RUNNING;  // 下個 tick 重送
+  }
+
+  // 3) 等待回報（保險 timeout：manager 最慢 5 秒一定回，10 秒沒回視為掉包）
+  loc_wait_ticks_++;
+  if (loc_wait_ticks_ > kLocTimeoutTicks) {
+    loc_retry_count_++;
+    loc_cmd_sent_ = false;
+
+    RCLCPP_WARN(
+      ctx_->node->get_logger(),
+      "[Mission][Localize] no status after %.1f s, resend (attempt %d/%d)",
+      kLocTimeoutTicks / 10.0, loc_retry_count_, kLocMaxRetries);
+
+    if (loc_retry_count_ >= kLocMaxRetries) {
+      loc_retry_count_ = 0;
+      return LocalizeResult::FAILURE;
+    }
+  }
+
+  return LocalizeResult::RUNNING;
 }
 
 // ============================================================================
@@ -212,13 +300,161 @@ bool MissionController::transition_to_named_pose(
   const std::string& target_name,
   float timeout_sec)
 {
-  // 導航功能已停用（僅保留任務機構流程），直接視為抵達並跳過。
-  (void)timeout_sec;
-  RCLCPP_INFO(
-    ctx_->node->get_logger(),
-    "[Mission] navigation disabled, skip goal '%s'",
-    target_name.c_str());
-  return true;
+  // ---- 導航總開關（RobotContext::enable_navigation）----
+  // false 時不送 goal，直接視為已抵達，讓機構流程可以在沒有
+  // navigation_server / Nav2 / localization_manager 的情況下單獨測試。
+  if (!ctx_->enable_navigation) {
+    RCLCPP_INFO(
+      ctx_->node->get_logger(),
+      "[Mission][Nav] navigation disabled, skip goal '%s'",
+      target_name.c_str());
+    return true;
+  }
+
+  using NavigateAction = robot_interfaces::action::NavigateToNamedPose;
+
+  if (!ctx_->nav_client) {
+    RCLCPP_ERROR(ctx_->node->get_logger(), "[Mission] nav_client not initialized");
+    return false;
+  }
+
+  // 失敗後的退避期：先消化 backoff ticks，再允許重送
+  if (nav_backoff_ticks_ > 0) {
+    nav_backoff_ticks_--;
+    return false;
+  }
+
+  if (!nav_goal_sent_) {
+    if (!ctx_->nav_client->wait_for_action_server(std::chrono::seconds(1))) {
+      RCLCPP_WARN(
+        ctx_->node->get_logger(),
+        "[Mission] /navigate_to_named_pose server not ready, waiting...");
+      return false;
+    }
+
+    NavigateAction::Goal goal;
+    goal.target_name = target_name;
+    goal.timeout_sec = timeout_sec;
+
+    nav_goal_sent_ = true;
+    nav_done_ = false;
+    nav_success_ = false;
+    nav_message_.clear();
+    nav_active_target_ = target_name;
+
+    RCLCPP_INFO(
+      ctx_->node->get_logger(),
+      "[Mission] send navigation goal: %s (attempt %d)",
+      target_name.c_str(),
+      nav_retry_count_ + 1);
+
+    auto options = rclcpp_action::Client<NavigateAction>::SendGoalOptions();
+
+    // navigation_server 對未知 pose name 會直接 REJECT goal，
+    // 這裡要接住 goal_response，否則 FSM 會永遠卡在 nav_done_ = false。
+    options.goal_response_callback =
+      [this](rclcpp_action::ClientGoalHandle<NavigateAction>::SharedPtr goal_handle)
+      {
+        if (!goal_handle) {
+          nav_done_ = true;
+          nav_success_ = false;
+          nav_message_ = "goal rejected by navigation_server (unknown pose name?)";
+
+          RCLCPP_ERROR(
+            ctx_->node->get_logger(),
+            "[Mission][NavResponse] %s", nav_message_.c_str());
+        }
+      };
+
+    options.feedback_callback =
+      [this](
+        rclcpp_action::ClientGoalHandle<NavigateAction>::SharedPtr,
+        const std::shared_ptr<const NavigateAction::Feedback> feedback)
+      {
+        RCLCPP_INFO(
+          ctx_->node->get_logger(),
+          "[Mission][NavFeedback] state=%s progress=%.2f",
+          feedback->current_state.c_str(),
+          feedback->progress);
+      };
+
+    options.result_callback =
+      [this](const rclcpp_action::ClientGoalHandle<NavigateAction>::WrappedResult& result)
+      {
+        nav_done_ = true;
+
+        // navigation_server 現在使用正確的 action 語意：
+        //   成功 -> SUCCEEDED、失敗/逾時 -> ABORTED、取消 -> CANCELED。
+        // 三種終態的 result->message 都有內容，一律讀出來方便除錯。
+        if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+          nav_success_ = result.result->success;
+          nav_message_ = result.result->message;
+        } else {
+          nav_success_ = false;
+          nav_message_ = result.result
+            ? result.result->message
+            : (result.code == rclcpp_action::ResultCode::CANCELED
+                ? "navigation goal canceled"
+                : "navigation goal aborted");
+        }
+
+        RCLCPP_INFO(
+          ctx_->node->get_logger(),
+          "[Mission][NavResult] success=%s message=%s",
+          nav_success_ ? "true" : "false",
+          nav_message_.c_str());
+      };
+
+    ctx_->nav_client->async_send_goal(goal, options);
+
+    return false;
+  }
+
+  if (!nav_done_) {
+    return false;
+  }
+
+  const bool result = nav_success_;
+
+  if (result) {
+    RCLCPP_INFO(
+      ctx_->node->get_logger(),
+      "[Mission] navigation to '%s' complete",
+      nav_active_target_.c_str());
+
+    nav_retry_count_ = 0;
+    nav_backoff_ticks_ = 0;
+  } else {
+    nav_retry_count_++;
+    nav_backoff_ticks_ = kNavBackoffTicks;
+
+    RCLCPP_ERROR(
+      ctx_->node->get_logger(),
+      "[Mission] navigation to '%s' failed (attempt %d): %s -- retry in %.1f s",
+      nav_active_target_.c_str(),
+      nav_retry_count_,
+      nav_message_.c_str(),
+      kNavBackoffTicks / 10.0);
+
+    if (nav_retry_count_ >= kNavMaxRetryWarn) {
+      RCLCPP_ERROR(
+        ctx_->node->get_logger(),
+        "[Mission] navigation to '%s' failed %d times in a row. "
+        "Check: (1) Cartographer localization / initial pose, "
+        "(2) named_poses.yaml target inside map & free space, "
+        "(3) Nav2 lifecycle nodes all active.",
+        nav_active_target_.c_str(),
+        nav_retry_count_);
+    }
+  }
+
+  nav_goal_sent_ = false;
+  nav_done_ = false;
+  nav_success_ = false;
+  nav_message_.clear();
+  nav_active_target_.clear();
+
+  return result;
 }
 
 bool MissionController::finish_decision()
@@ -275,7 +511,7 @@ void MissionController::tick()
           state_ = MissionState::WAIT_START;
           break;
         case LocalizeResult::FAILURE:
-          state_ = MissionState::WAIT_START;  
+          state_ = MissionState::SAFE_STOP;
           break;
         case LocalizeResult::RUNNING:
         default:

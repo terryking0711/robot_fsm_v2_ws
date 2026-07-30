@@ -16,6 +16,11 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>robot_interfaces</depend>
 
+  <!-- robot_bringup.launch.py 會 include robot_navigation 的 launch -->
+  <exec_depend>robot_navigation</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>

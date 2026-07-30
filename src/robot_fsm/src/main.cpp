@@ -60,6 +60,26 @@ int main(int argc, char** argv)
   ctx->node = ros_node;
 
   // ------------------------------------------------------------------
+  // 導航總開關
+  //   ros2 run robot_fsm robot_fsm_main --ros-args -p enable_navigation:=false
+  //   ros2 launch robot_fsm robot_bringup.launch.py enable_navigation:=false
+  // false 時：不啟動 navigation_server、FSM 內所有導航/定位步驟直接跳過，
+  //           只跑機構流程（等同先前 mission_test branch 的行為）。
+  // ------------------------------------------------------------------
+  ros_node->declare_parameter("enable_navigation", true);
+  ctx->enable_navigation = ros_node->get_parameter("enable_navigation").as_bool();
+
+  if (ctx->enable_navigation) {
+    RCLCPP_INFO(ros_node->get_logger(), "[Main] navigation ENABLED");
+  } else {
+    RCLCPP_WARN(
+      ros_node->get_logger(),
+      "[Main] navigation DISABLED (enable_navigation=false) -- "
+      "all nav goals will be skipped and localization treated as success. "
+      "MECHANISM-ONLY TEST MODE, do not use in competition.");
+  }
+
+  // ------------------------------------------------------------------
   // 場地定位點（world frame，場地最左下角為 (0,0)）
   // "start" 預設 = map 原點在 world 的位置 (0.425, 1.0, 0.0)。
   // TODO: reset_stage1~4 為佔位值，實際重置點座標量測後用 launch/yaml 覆蓋。
