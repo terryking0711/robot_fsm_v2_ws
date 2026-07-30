@@ -94,9 +94,10 @@ bool Stage2ClamFSM::tick()
       enter_state(Stage2State::S2_EXTEND_ARM);
       return false;
 
+    // 201 -> 伸出手臂
     case Stage2State::S2_EXTEND_ARM:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] EXTEND_ARM 伸出手臂");
-      publish_state_command(101, "S2_EXTEND_ARM", "extend_arm");
+      publish_state_command(201, "S2_EXTEND_ARM", "extend_arm");
       if (wait_ticks(30)) enter_state(Stage2State::S2_PUSH_CLAM);
       return false;
 
@@ -111,9 +112,10 @@ bool Stage2ClamFSM::tick()
       enter_state(Stage2State::S2_RETRACT_ARM);
       return false;
 
+    // 202 -> 收回手臂
     case Stage2State::S2_RETRACT_ARM:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM 收回手臂");
-      publish_state_command(102, "S2_RETRACT_ARM", "retract_arm");
+      publish_state_command(202, "S2_RETRACT_ARM", "retract_arm");
       if (wait_ticks(30)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
       return false;
 
@@ -128,9 +130,10 @@ bool Stage2ClamFSM::tick()
       enter_state(Stage2State::S2_ROTATE_BOX);
       return false;
 
+    // 203 -> 翻轉箱子
     case Stage2State::S2_ROTATE_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX 翻轉箱子");
-      publish_state_command(201, "S2_ROTATE_BOX", "rotate_box");
+      publish_state_command(203, "S2_ROTATE_BOX", "rotate_box");
       if (wait_ticks(60)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
       return false;
 
@@ -145,9 +148,10 @@ bool Stage2ClamFSM::tick()
       enter_state(Stage2State::S2_DROP_BOX);
       return false;
     
+    // 204 -> 放下箱子
     case Stage2State::S2_DROP_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DROP_BOX 放下箱子");
-      publish_state_command(202, "S2_DROP_BOX", "drop_box");
+      publish_state_command(204, "S2_DROP_BOX", "drop_box");
       if (wait_ticks(20)) enter_state(Stage2State::S2_DONE);
       return false;
     
