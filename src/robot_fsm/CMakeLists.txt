@@ -57,7 +57,8 @@ install(DIRECTORY include/
 )
 
 # 原本沒有安裝 launch/，導致 `ros2 launch robot_fsm <x>.launch.py` 找不到檔案。
-install(DIRECTORY launch/
+install(DIRECTORY
+  launch
   DESTINATION share/${PROJECT_NAME}
 )
 

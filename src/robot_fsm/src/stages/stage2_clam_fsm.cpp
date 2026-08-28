@@ -228,6 +228,7 @@ bool Stage2ClamFSM::tick()
 
     case Stage2State::S2_ENTER:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ENTER 第二關");
+      publish_state_command(2000, "S2_ENTER", "initialize_stage2");
       wait_ticks(10);
       enter_state(Stage2State::S2_APPROACH);
       return false;
@@ -262,6 +263,12 @@ bool Stage2ClamFSM::tick()
       if (wait_ticks(30)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
       return false;
 
+    case Stage2State::S2_LOCKER_DOWN:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCKER_DOWN 鎖定箱子");
+      publish_state_command(2001, "S2_LOCKER_DOWN", "lock_locker");
+      if (wait_ticks(30)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
+      return false;
+
     case Stage2State::S2_MOVE_FORWARD_ALIGN:
       if (!nav_arrived_) {
         if (!navigate_to_named_pose("stage2_push_clam", 15.0f)) {
@@ -272,11 +279,20 @@ bool Stage2ClamFSM::tick()
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_FORWARD_ALIGN 前進並對齊箱子");
       enter_state(Stage2State::S2_ROTATE_BOX);
       return false;
+    
+    // 203 -> 鎖定箱子
+    case Stage2State::S2_LOCK_BOX:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCK_BOX 鎖定箱子");
+      publish_state_command(203, "S2_LOCK_BOX", "lock_box");
+      if (wait_ticks(60)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
+      return false;
 
-    // 203 -> 翻轉箱子
+    // 204, 205 -> 翻轉箱子
     case Stage2State::S2_ROTATE_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX 翻轉箱子");
-      publish_state_command(203, "S2_ROTATE_BOX", "rotate_box");
+      publish_state_command(204, "S2_ROTATE_BOX", "rotate_box");
+      wait_ticks(10);
+      publish_state_command(205, "S2_ROTATE_BOX", "rotate_box");
       if (wait_ticks(60)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
       return false;
 
@@ -291,15 +307,16 @@ bool Stage2ClamFSM::tick()
       enter_state(Stage2State::S2_DROP_BOX);
       return false;
     
-    // 204 -> 放下箱子
+    // 206 -> 放下箱子
     case Stage2State::S2_DROP_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DROP_BOX 放下箱子");
-      publish_state_command(204, "S2_DROP_BOX", "drop_box");
+      publish_state_command(206, "S2_DROP_BOX", "drop_box");
       if (wait_ticks(20)) enter_state(Stage2State::S2_DONE);
       return false;
     
     case Stage2State::S2_DONE:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DONE 第二關完成");
+      publish_state_command(207, "S2_DONE", "done");
       return true;
   }
 

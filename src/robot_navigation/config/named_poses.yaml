@@ -27,20 +27,35 @@ named_poses:
     y: 3.0
     yaw: 0.0
 
+  # stage2_push_clam:
+  #   x: 0.925
+  #   y: 3.0
+  #   yaw: 0.0
+
   stage2_push_clam:
-    x: 0.925
+    x: 0.425
     y: 3.0
     yaw: 0.0
 
   stage2_move_forward_align:
-    x: 1.225
+    x: 0.425
     y: 3.0
     yaw: 0.0
 
+  # stage2_move_forward_align:
+  #   x: 1.225
+  #   y: 3.0
+  #   yaw: 0.0
+
   stage2_return_point:
-    x: 1.225
+    x: 0.425
     y: 3.0
     yaw: 0.0
+
+  # stage2_return_point:
+  #   x: 1.225
+  #   y: 3.0
+  #   yaw: 0.0
 
   # 第三關
   stage3_entry:
