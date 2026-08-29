@@ -263,6 +263,7 @@ bool Stage2ClamFSM::tick()
       if (wait_ticks(30)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
       return false;
 
+    // 2001 -> 鎖定箱子
     case Stage2State::S2_LOCKER_DOWN:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCKER_DOWN 鎖定箱子");
       publish_state_command(2001, "S2_LOCKER_DOWN", "lock_locker");
@@ -277,25 +278,29 @@ bool Stage2ClamFSM::tick()
         nav_arrived_ = true;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_FORWARD_ALIGN 前進並對齊箱子");
-      enter_state(Stage2State::S2_ROTATE_BOX);
+      enter_state(Stage2State::S2_LOCK_BOX);
       return false;
     
     // 203 -> 鎖定箱子
     case Stage2State::S2_LOCK_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCK_BOX 鎖定箱子");
       publish_state_command(203, "S2_LOCK_BOX", "lock_box");
-      if (wait_ticks(60)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
+      if (wait_ticks(10)) enter_state(Stage2State::S2_ROTATE_BOX_1);
       return false;
 
     // 204, 205 -> 翻轉箱子
-    case Stage2State::S2_ROTATE_BOX:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX 翻轉箱子");
-      publish_state_command(204, "S2_ROTATE_BOX", "rotate_box");
-      wait_ticks(10);
-      publish_state_command(205, "S2_ROTATE_BOX", "rotate_box");
-      if (wait_ticks(60)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
+    case Stage2State::S2_ROTATE_BOX_1:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_1 翻轉箱子");
+      publish_state_command(204, "S2_ROTATE_BOX_1", "rotate_box_1");
+      if (wait_ticks(10)) enter_state(Stage2State::S2_ROTATE_BOX_2);
       return false;
 
+    case Stage2State::S2_ROTATE_BOX_2:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_2 翻轉箱子");
+      publish_state_command(205, "S2_ROTATE_BOX_2", "rotate_box_2");
+      if (wait_ticks(10)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
+      return false;
+      
     case Stage2State::S2_MOVE_TO_RETURN:
       if (!nav_arrived_) {
         if (!navigate_to_named_pose("stage2_return_point", 15.0f)) {

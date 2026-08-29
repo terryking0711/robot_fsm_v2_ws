@@ -3,11 +3,21 @@
 #include <cmath>
 
 #include <tf2/LinearMath/Quaternion.h>
+#include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "robot_fsm/stages/stage1_wetland_fsm.hpp"
 #include "robot_fsm/stages/stage2_clam_fsm.hpp"
 #include "robot_fsm/stages/stage3_hay_fsm.hpp"
+
+namespace
+{
+// 角度差包到 [-pi, pi]，避免引入 angles 套件依賴
+inline double wrap_angle_diff(double a, double b)
+{
+  return std::remainder(a - b, 2.0 * M_PI);
+}
+}  // namespace
 
 MissionController::MissionController(std::shared_ptr<RobotContext> ctx)
 : ctx_(ctx),
@@ -19,9 +29,12 @@ MissionController::MissionController(std::shared_ptr<RobotContext> ctx)
   nav_active_target_(""),
   nav_retry_count_(0),
   nav_backoff_ticks_(0),
-  loc_cmd_sent_(false),
+  loc_phase_(LocPhase::IDLE),
+  loc_settle_ticks_(0),
   loc_wait_ticks_(0),
+  loc_verify_ticks_(0),
   loc_retry_count_(0),
+  loc_target_(),
   reset_resume_state_(MissionState::SAFE_STOP),
   reset_pose_key_("")
 {
@@ -49,6 +62,12 @@ bool MissionController::init_system()
     ctx_->node->create_publisher<geometry_msgs::msg::PoseStamped>(
       "/init_pose_cmd", 10);
 
+  // TF：用來判斷 cartographer 目前定位是否已經健康。
+  // TransformListener 預設會自己開一條 spin thread 處理 /tf，
+  // 不會跟 mission tick 的 executor 打架。
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(ctx_->node->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, ctx_->node);
+
   return true;
 }
 
@@ -63,6 +82,11 @@ bool MissionController::self_check()
 
   if (!ctx_->init_cmd_pub) {
     RCLCPP_ERROR(ctx_->node->get_logger(), "[Mission] init_cmd_pub is null");
+    return false;
+  }
+
+  if (!tf_buffer_) {
+    RCLCPP_ERROR(ctx_->node->get_logger(), "[Mission] tf_buffer is null");
     return false;
   }
 
@@ -95,18 +119,137 @@ bool MissionController::leave_start_zone()
 
 // ============================================================================
 // Localization：tick-based，非阻塞
+//
+// 設計原則：對 cartographer 而言「重新初始化」= /finish_trajectory +
+// /start_trajectory，是破壞性操作 —— 已經收斂的估計會被丟掉，換成 YAML 裡
+// 寫死的名目 pose，還要重新累積 submap 才會穩。所以本檔的策略是：
+//   1. 已經定位好就完全不動它（health check → 直接 SUCCESS）
+//   2. 真的要重置時，先停穩再送指令（新 trajectory 的 extrapolator 最脆弱，
+//      而且可以閃掉 STM32 動態下的 NaN odom）
+//   3. manager 回報 ok 之後還要自己驗一次收斂，才算數
 // ============================================================================
+
+bool MissionController::is_localization_healthy(
+  const Pose2D& expect_world,
+  double tol_xy,
+  double tol_yaw) const
+{
+  if (!tf_buffer_) {
+    return false;
+  }
+
+  geometry_msgs::msg::TransformStamped tf;
+  try {
+    tf = tf_buffer_->lookupTransform(
+      kWorldFrame, kBaseFrame,
+      tf2::TimePointZero,
+      tf2::durationFromSec(0.05));
+  } catch (const tf2::TransformException& e) {
+    // 還沒有 trajectory / cartographer 尚未起來 → 視為不健康
+    RCLCPP_DEBUG(
+      ctx_->node->get_logger(),
+      "[Mission][Localize] tf %s->%s unavailable: %s",
+      kWorldFrame, kBaseFrame, e.what());
+    return false;
+  }
+
+  // 新鮮度：TF 停更代表 cartographer 掛了或還沒收斂
+  const auto age = ctx_->node->now() - rclcpp::Time(tf.header.stamp);
+  if (age > rclcpp::Duration::from_seconds(kLocTfMaxAgeSec)) {
+    RCLCPP_WARN(
+      ctx_->node->get_logger(),
+      "[Mission][Localize] tf stale (%.2f s old)", age.seconds());
+    return false;
+  }
+
+  const double dx = tf.transform.translation.x - expect_world.x;
+  const double dy = tf.transform.translation.y - expect_world.y;
+  const double dist = std::hypot(dx, dy);
+
+  const double yaw = tf2::getYaw(tf.transform.rotation);
+  const double dyaw = std::fabs(wrap_angle_diff(yaw, expect_world.yaw));
+
+  const bool ok = (dist <= tol_xy) && (dyaw <= tol_yaw);
+
+  RCLCPP_INFO(
+    ctx_->node->get_logger(),
+    "[Mission][Localize] health check: current=[%.3f, %.3f, %.3f] "
+    "expect=[%.3f, %.3f, %.3f] err=[%.3f m, %.3f rad] tol=[%.3f, %.3f] -> %s",
+    tf.transform.translation.x, tf.transform.translation.y, yaw,
+    expect_world.x, expect_world.y, expect_world.yaw,
+    dist, dyaw, tol_xy, tol_yaw,
+    ok ? "HEALTHY" : "UNHEALTHY");
+
+  return ok;
+}
 
 void MissionController::reset_localize_bookkeeping()
 {
-  loc_cmd_sent_ = false;
+  loc_phase_ = LocPhase::IDLE;
+  loc_settle_ticks_ = 0;
   loc_wait_ticks_ = 0;
+  loc_verify_ticks_ = 0;
   loc_retry_count_ = 0;
   ctx_->init_status_received = false;
   ctx_->init_status_ok = false;
 }
 
-LocalizeResult MissionController::localize_at(const Pose2D& target_world)
+void MissionController::send_init_pose_cmd(const Pose2D& target_world)
+{
+  // 清掉舊的 status，避免吃到上一輪殘留的回報
+  ctx_->init_status_received = false;
+  ctx_->init_status_ok = false;
+
+  geometry_msgs::msg::PoseStamped msg;
+  msg.header.stamp = ctx_->node->get_clock()->now();
+  msg.header.frame_id = kWorldFrame;
+  msg.pose.position.x = target_world.x;
+  msg.pose.position.y = target_world.y;
+
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, target_world.yaw);
+  msg.pose.orientation = tf2::toMsg(q);
+
+  ctx_->init_cmd_pub->publish(msg);
+
+  RCLCPP_INFO(
+    ctx_->node->get_logger(),
+    "[Mission][Localize] send init cmd (world): [%.3f, %.3f, %.3f] (attempt %d/%d)",
+    target_world.x, target_world.y, target_world.yaw,
+    loc_retry_count_ + 1, kLocMaxRetries);
+}
+
+LocalizeResult MissionController::handle_localize_retry(const char* reason)
+{
+  loc_retry_count_++;
+
+  RCLCPP_WARN(
+    ctx_->node->get_logger(),
+    "[Mission][Localize] %s (attempt %d/%d)",
+    reason, loc_retry_count_, kLocMaxRetries);
+
+  if (loc_retry_count_ >= kLocMaxRetries) {
+    RCLCPP_ERROR(
+      ctx_->node->get_logger(),
+      "[Mission][Localize] exceeded max retries (%d). "
+      "Check: (1) cartographer_node up? (2) robot placed near target pose? "
+      "(3) world->map static TF offset consistent with named_poses.yaml? "
+      "(4) /odometry/filtered healthy (no NaN)?",
+      kLocMaxRetries);
+    loc_phase_ = LocPhase::IDLE;
+    loc_retry_count_ = 0;
+    return LocalizeResult::FAILURE;
+  }
+
+  // 回到 SETTLE：重送之前再停穩一次
+  loc_phase_ = LocPhase::SETTLE;
+  loc_settle_ticks_ = 0;
+  loc_wait_ticks_ = 0;
+  loc_verify_ticks_ = 0;
+  return LocalizeResult::RUNNING;
+}
+
+LocalizeResult MissionController::localize_at(const Pose2D& target_world, bool force)
 {
   // ---- 導航總開關（RobotContext::enable_navigation）----
   // 與導航共用同一個開關：false 時不對 localization_manager 送
@@ -118,81 +261,104 @@ LocalizeResult MissionController::localize_at(const Pose2D& target_world)
     return LocalizeResult::SUCCESS;
   }
 
-  // 1) 尚未送出指令：送出 /init_pose_cmd（world frame）
-  if (!loc_cmd_sent_) {
-    // 清掉舊的 status，避免吃到上一輪殘留的回報
-    ctx_->init_status_received = false;
-    ctx_->init_status_ok = false;
+  loc_target_ = target_world;
 
-    geometry_msgs::msg::PoseStamped msg;
-    msg.header.stamp = ctx_->node->get_clock()->now();
-    msg.header.frame_id = "world";
-    msg.pose.position.x = target_world.x;
-    msg.pose.position.y = target_world.y;
+  switch (loc_phase_) {
 
-    tf2::Quaternion q;
-    q.setRPY(0.0, 0.0, target_world.yaw);
-    msg.pose.orientation = tf2::toMsg(q);
+    // ------------------------------------------------------------------
+    // 進入點：先問「有沒有必要重置」
+    // ------------------------------------------------------------------
+    case LocPhase::IDLE: {
+      if (!force && is_localization_healthy(target_world, kLocTolXy, kLocTolYaw)) {
+        RCLCPP_INFO(
+          ctx_->node->get_logger(),
+          "[Mission][Localize] already localized near target, "
+          "skip trajectory restart");
+        loc_retry_count_ = 0;
+        return LocalizeResult::SUCCESS;
+      }
 
-    ctx_->init_cmd_pub->publish(msg);
+      if (force) {
+        RCLCPP_WARN(
+          ctx_->node->get_logger(),
+          "[Mission][Localize] forced relocalization requested");
+      }
 
-    loc_cmd_sent_ = true;
-    loc_wait_ticks_ = 0;
-
-    RCLCPP_INFO(
-      ctx_->node->get_logger(),
-      "[Mission][Localize] send init cmd (world): [%.3f, %.3f, %.3f] (attempt %d)",
-      target_world.x, target_world.y, target_world.yaw,
-      loc_retry_count_ + 1);
-
-    return LocalizeResult::RUNNING;
-  }
-
-  // 2) 收到 localization_manager 回報
-  if (ctx_->init_status_received) {
-    const bool ok = ctx_->init_status_ok;
-    ctx_->init_status_received = false;
-    loc_cmd_sent_ = false;
-
-    if (ok) {
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Mission][Localize] localization SUCCESS");
-      loc_retry_count_ = 0;
-      return LocalizeResult::SUCCESS;
+      loc_phase_ = LocPhase::SETTLE;
+      loc_settle_ticks_ = 0;
+      return LocalizeResult::RUNNING;
     }
 
-    loc_retry_count_++;
-    RCLCPP_WARN(
-      ctx_->node->get_logger(),
-      "[Mission][Localize] localization failed (attempt %d/%d), resend",
-      loc_retry_count_, kLocMaxRetries);
+    // ------------------------------------------------------------------
+    // 停穩：新 trajectory 的 extrapolator 沒有歷史資料，動態下重置必爛。
+    // 順便閃掉 STM32 在運動時噴 NaN odom 的路徑。
+    // ------------------------------------------------------------------
+    case LocPhase::SETTLE: {
+      loc_settle_ticks_++;
+      if (loc_settle_ticks_ < kLocSettleTicks) {
+        return LocalizeResult::RUNNING;
+      }
 
-    if (loc_retry_count_ >= kLocMaxRetries) {
-      RCLCPP_ERROR(
-        ctx_->node->get_logger(),
-        "[Mission][Localize] exceeded max retries (%d). "
-        "Check: (1) cartographer_node up? (2) robot placed near target pose? "
-        "(3) world->map offset consistent?",
-        kLocMaxRetries);
-      loc_retry_count_ = 0;
-      return LocalizeResult::FAILURE;
+      send_init_pose_cmd(target_world);
+
+      loc_phase_ = LocPhase::WAIT_STATUS;
+      loc_wait_ticks_ = 0;
+      return LocalizeResult::RUNNING;
     }
-    return LocalizeResult::RUNNING;  // 下個 tick 重送
-  }
 
-  // 3) 等待回報（保險 timeout：manager 最慢 5 秒一定回，10 秒沒回視為掉包）
-  loc_wait_ticks_++;
-  if (loc_wait_ticks_ > kLocTimeoutTicks) {
-    loc_retry_count_++;
-    loc_cmd_sent_ = false;
+    // ------------------------------------------------------------------
+    // 等 localization_manager 回報
+    // ------------------------------------------------------------------
+    case LocPhase::WAIT_STATUS: {
+      if (ctx_->init_status_received) {
+        const bool ok = ctx_->init_status_ok;
+        ctx_->init_status_received = false;
 
-    RCLCPP_WARN(
-      ctx_->node->get_logger(),
-      "[Mission][Localize] no status after %.1f s, resend (attempt %d/%d)",
-      kLocTimeoutTicks / 10.0, loc_retry_count_, kLocMaxRetries);
+        if (!ok) {
+          return handle_localize_retry("localization_manager reported failure, resend");
+        }
 
-    if (loc_retry_count_ >= kLocMaxRetries) {
-      loc_retry_count_ = 0;
-      return LocalizeResult::FAILURE;
+        RCLCPP_INFO(
+          ctx_->node->get_logger(),
+          "[Mission][Localize] manager reported OK, waiting %.1f s to verify convergence",
+          kLocVerifyTicks / 10.0);
+
+        loc_phase_ = LocPhase::VERIFY;
+        loc_verify_ticks_ = 0;
+        return LocalizeResult::RUNNING;
+      }
+
+      // 保險 timeout：manager 最慢 5 秒一定回，超過視為掉包
+      loc_wait_ticks_++;
+      if (loc_wait_ticks_ > kLocTimeoutTicks) {
+        return handle_localize_retry("no status from localization_manager, resend");
+      }
+
+      return LocalizeResult::RUNNING;
+    }
+
+    // ------------------------------------------------------------------
+    // 驗收：manager 說 ok 不代表 pose graph 已經收斂。
+    // 等一段時間後自己查 TF，確認估計真的落在目標附近才放行。
+    // ------------------------------------------------------------------
+    case LocPhase::VERIFY: {
+      loc_verify_ticks_++;
+      if (loc_verify_ticks_ < kLocVerifyTicks) {
+        return LocalizeResult::RUNNING;
+      }
+
+      // 容差比 health check 寬：重置後 cartographer 會 scan match 到真實位置，
+      // 跟我們給的名目 pose 本來就會有落差。
+      if (is_localization_healthy(target_world, kLocVerifyTolXy, kLocVerifyTolYaw)) {
+        RCLCPP_INFO(
+          ctx_->node->get_logger(),
+          "[Mission][Localize] localization SUCCESS (converged)");
+        loc_phase_ = LocPhase::IDLE;
+        loc_retry_count_ = 0;
+        return LocalizeResult::SUCCESS;
+      }
+
+      return handle_localize_retry("pose did not converge after restart, resend");
     }
   }
 
@@ -503,8 +669,9 @@ void MissionController::tick()
       break;
 
     case MissionState::LOCALIZE: {
-      // 對出發點初始化定位，成功前不准進入任何導航相關狀態
-      switch (localize_at(ctx_->field_poses.at("start"))) {
+      // 開機定位：cartographer 若已經在起點附近收斂，就完全不要碰它。
+      // force = false → 先做 health check，健康就直接放行。
+      switch (localize_at(ctx_->field_poses.at("start"), /*force=*/false)) {
         case LocalizeResult::SUCCESS:
           RCLCPP_INFO(ctx_->node->get_logger(),
             "[Mission] LOCALIZE done, localization ready");
@@ -563,8 +730,9 @@ void MissionController::tick()
       break;
 
     case MissionState::RELOCALIZE: {
-      // 機器人已被隊員搬到重置點，對重置點重新初始化定位
-      switch (localize_at(ctx_->field_poses.at(reset_pose_key_))) {
+      // 機器人已被隊員搬到重置點，目前的估計必定是錯的：
+      // force = true → 跳過 health check，強制重建 trajectory。
+      switch (localize_at(ctx_->field_poses.at(reset_pose_key_), /*force=*/true)) {
         case LocalizeResult::SUCCESS:
           RCLCPP_INFO(
             ctx_->node->get_logger(),

@@ -14,8 +14,6 @@ find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
 
-include_directories(include)
-
 add_executable(robot_fsm_main
   src/main.cpp
   src/mission/mission_controller.cpp
@@ -26,8 +24,18 @@ add_executable(robot_fsm_main
   src/stages/stage5_new_fsm.cpp
 )
 
+target_include_directories(robot_fsm_main PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 add_executable(stm_communication_node
   src/communication/stm_communication_node.cpp
+)
+
+target_include_directories(stm_communication_node PRIVATE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 
 ament_target_dependencies(robot_fsm_main
@@ -56,10 +64,9 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-# 原本沒有安裝 launch/，導致 `ros2 launch robot_fsm <x>.launch.py` 找不到檔案。
-install(DIRECTORY
-  launch
-  DESTINATION share/${PROJECT_NAME}
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+  FILES_MATCHING PATTERN "*.launch.py"
 )
 
 ament_package()

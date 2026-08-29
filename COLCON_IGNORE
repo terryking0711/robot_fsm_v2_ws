@@ -1,0 +1,3 @@
+# This workspace is built explicitly by build_fsm.sh.
+# Prevent a colcon build launched from /workspaces from creating a second
+# robot_fsm installation in /workspaces/install.
