@@ -1,7 +1,10 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
+
+#include <geometry_msgs/msg/twist.hpp>
 
 #include "robot_fsm/common/robot_context.hpp"
 #include "robot_fsm/stages/stage2_clam_states.hpp"
@@ -23,6 +26,16 @@ private:
     const std::string& action_name,
     const std::string& extra_json = "{}");
 
+  void publish_cmd_vel(double linear_x, double linear_y, double angular_z);
+
+  bool run_timed_cmd_vel_state(
+    const char* state_name,
+    double duration_sec,
+    double linear_x,
+    double linear_y,
+    double angular_z,
+    Stage2State next_state);
+
   // 導航到指定 named pose（tick-based 非阻塞，失敗自動退避重送，做法同
   // MissionController::transition_to_named_pose）。
   bool navigate_to_named_pose(const std::string& target_name, float timeout_sec);
@@ -31,6 +44,19 @@ private:
   Stage2State state_;
   int tick_count_;
   bool state_command_sent_;
+  rclcpp::Time state_enter_time_;
+
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+
+  static constexpr double kAllignDurationSec = 1.5;
+  static constexpr double kAllignLinearX = 0.0;
+  static constexpr double kAllignLinearY = -0.1;
+  static constexpr double kAllignAngularZ = 0.0;
+
+  static constexpr double kAllignLockDurationSec = 1.0;
+  static constexpr double kAllignLockLinearX = 0.0;
+  static constexpr double kAllignLockLinearY = -0.1;
+  static constexpr double kAllignLockAngularZ = 0.0;
 
   // ---- navigation bookkeeping（給未來要在特定 state 內導航時直接呼叫用）----
   bool nav_goal_sent_;

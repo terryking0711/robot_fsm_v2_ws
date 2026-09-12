@@ -7,6 +7,8 @@ Stage2ClamFSM::Stage2ClamFSM(std::shared_ptr<RobotContext> ctx)
   state_(Stage2State::S2_ENTER),
   tick_count_(0),
   state_command_sent_(false),
+  state_enter_time_(ctx_->node->now()),
+  cmd_vel_pub_(ctx_->node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10)),
   nav_goal_sent_(false),
   nav_done_(false),
   nav_success_(false),
@@ -34,6 +36,40 @@ void Stage2ClamFSM::enter_state(Stage2State next_state)
   tick_count_ = 0;
   state_command_sent_ = false;
   nav_arrived_ = false;
+  state_enter_time_ = ctx_->node->now();
+}
+
+void Stage2ClamFSM::publish_cmd_vel(double linear_x, double linear_y, double angular_z)
+{
+  geometry_msgs::msg::Twist msg;
+  msg.linear.x = linear_x;
+  msg.linear.y = linear_y;
+  msg.angular.z = angular_z;
+  cmd_vel_pub_->publish(msg);
+}
+
+bool Stage2ClamFSM::run_timed_cmd_vel_state(
+  const char* state_name,
+  double duration_sec,
+  double linear_x,
+  double linear_y,
+  double angular_z,
+  Stage2State next_state)
+{
+  const double elapsed_sec = (ctx_->node->now() - state_enter_time_).seconds();
+
+  if (elapsed_sec < duration_sec) {
+    publish_cmd_vel(linear_x, linear_y, angular_z);
+    return false;
+  }
+
+  publish_cmd_vel(0.0, 0.0, 0.0);
+  RCLCPP_INFO(
+    ctx_->node->get_logger(),
+    "[Stage2] %s 完成，停止 /cmd_vel 並進入下一個 state",
+    state_name);
+  enter_state(next_state);
+  return false;
 }
 
 bool Stage2ClamFSM::navigate_to_named_pose(
@@ -230,11 +266,6 @@ bool Stage2ClamFSM::tick()
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ENTER 第二關");
       publish_state_command(2000, "S2_ENTER", "initialize_stage2");
       wait_ticks(10);
-      enter_state(Stage2State::S2_APPROACH);
-      return false;
-
-    case Stage2State::S2_APPROACH:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] APPROACH 靠近蛤蜊");
       enter_state(Stage2State::S2_EXTEND_ARM);
       return false;
 
@@ -242,9 +273,19 @@ bool Stage2ClamFSM::tick()
     case Stage2State::S2_EXTEND_ARM:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] EXTEND_ARM 伸出手臂");
       publish_state_command(201, "S2_EXTEND_ARM", "extend_arm");
-      if (wait_ticks(30)) enter_state(Stage2State::S2_PUSH_CLAM);
+      if (wait_ticks(30)) enter_state(Stage2State::S2_ALLIGN);
       return false;
 
+    case Stage2State::S2_ALLIGN: {
+      return run_timed_cmd_vel_state(
+        "ALLIGN",
+        kAllignDurationSec,
+        kAllignLinearX,
+        kAllignLinearY,
+        kAllignAngularZ,
+        Stage2State::S2_PUSH_CLAM);
+    }
+     
     case Stage2State::S2_PUSH_CLAM:
       if (!nav_arrived_) {
         if (!navigate_to_named_pose("stage2_push_clam", 15.0f)) {
@@ -253,34 +294,45 @@ bool Stage2ClamFSM::tick()
         nav_arrived_ = true;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] PUSH_CLAM 將蛤蜊推入箱中");
-      enter_state(Stage2State::S2_RETRACT_ARM);
+      enter_state(Stage2State::S2_LIFT_ARM);
       return false;
 
-    // 202 -> 收回手臂
-    case Stage2State::S2_RETRACT_ARM:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM 收回手臂");
-      publish_state_command(202, "S2_RETRACT_ARM", "retract_arm");
-      if (wait_ticks(30)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
-      return false;
-
-    // 2001 -> 鎖定箱子
-    case Stage2State::S2_LOCKER_DOWN:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCKER_DOWN 鎖定箱子");
-      publish_state_command(2001, "S2_LOCKER_DOWN", "lock_locker");
+    // 2010 -> 抬起手臂到最高點
+    case Stage2State::S2_LIFT_ARM:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LIFT_ARM 抬起手臂到最高點");
+      publish_state_command(2010, "S2_LIFT_ARM", "lift_arm");
       if (wait_ticks(30)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
       return false;
 
     case Stage2State::S2_MOVE_FORWARD_ALIGN:
       if (!nav_arrived_) {
-        if (!navigate_to_named_pose("stage2_push_clam", 15.0f)) {
+        if (!navigate_to_named_pose("stage2_move_forward_align", 15.0f)) {
           return false;
         }
         nav_arrived_ = true;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_FORWARD_ALIGN 前進並對齊箱子");
-      enter_state(Stage2State::S2_LOCK_BOX);
+      enter_state(Stage2State::S2_ALLIGN_LOCK);
+      return false;
+
+    case Stage2State::S2_ALLIGN_LOCK:
+      return run_timed_cmd_vel_state(
+        "ALLIGN_LOCK",
+        kAllignLockDurationSec,
+        kAllignLockLinearX,
+        kAllignLockLinearY,
+        kAllignLockAngularZ,
+        Stage2State::S2_LOCKER_DOWN);
+
+
+    // 2001 -> 鎖定箱子
+    case Stage2State::S2_LOCKER_DOWN:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCKER_DOWN 鎖定箱子");
+      publish_state_command(2001, "S2_LOCKER_DOWN", "lock_locker");
+      if (wait_ticks(30)) enter_state(Stage2State::S2_LOCK_BOX);
       return false;
     
+
     // 203 -> 鎖定箱子
     case Stage2State::S2_LOCK_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCK_BOX 鎖定箱子");
@@ -291,13 +343,13 @@ bool Stage2ClamFSM::tick()
     // 204, 205 -> 翻轉箱子
     case Stage2State::S2_ROTATE_BOX_1:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_1 翻轉箱子");
-      publish_state_command(204, "S2_ROTATE_BOX_1", "rotate_box_1");
+      // publish_state_command(204, "S2_ROTATE_BOX_1", "rotate_box_1");
       if (wait_ticks(10)) enter_state(Stage2State::S2_ROTATE_BOX_2);
       return false;
 
     case Stage2State::S2_ROTATE_BOX_2:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_2 翻轉箱子");
-      publish_state_command(205, "S2_ROTATE_BOX_2", "rotate_box_2");
+      // publish_state_command(205, "S2_ROTATE_BOX_2", "rotate_box_2");
       if (wait_ticks(10)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
       return false;
       
@@ -316,12 +368,29 @@ bool Stage2ClamFSM::tick()
     case Stage2State::S2_DROP_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DROP_BOX 放下箱子");
       publish_state_command(206, "S2_DROP_BOX", "drop_box");
-      if (wait_ticks(20)) enter_state(Stage2State::S2_DONE);
+      if (wait_ticks(20)) enter_state(Stage2State::S2_RECOVERY);
+      return false;
+      
+    case Stage2State::S2_RECOVERY:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RECOVERY 回復到初始狀態");
+      publish_state_command(207, "S2_RECOVERY", "recovery");
+      if (wait_ticks(20)) enter_state(Stage2State::S2_RETRACT_ARM_1);
+      return true;
+    
+    case Stage2State::S2_RETRACT_ARM_1:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM_1 收回手臂");
+      publish_state_command(2011, "S2_RETRACT_ARM_1", "retract_arm_1");
+      if (wait_ticks(20)) enter_state(Stage2State::S2_RETRACT_ARM_2);
       return false;
     
+    case Stage2State::S2_RETRACT_ARM_2:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM_2 收回手臂");
+      publish_state_command(202, "S2_RETRACT_ARM_2", "retract_arm_2");
+      if (wait_ticks(20)) enter_state(Stage2State::S2_DONE);
+      return false;
+
     case Stage2State::S2_DONE:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DONE 第二關完成");
-      publish_state_command(207, "S2_DONE", "done");
       return true;
   }
 

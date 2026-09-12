@@ -10,22 +10,27 @@
 # 實際比賽點位量測後再更新。
 # ============================================================================
 named_poses:
+  # leave_start_zone:
+  #   x: 0.48007
+  #   y: 3.06604
+  #   yaw: 0.0
+  
   leave_start_zone:
-    x: 0.425
-    y: 1.0
+    x: 0.524321659455427
+    y: 3.567879879121584
     yaw: 0.0
 
   # 第一關
   stage1_entry:
-    x: 0.425
-    y: 3.0
+    x: 2.48007
+    y: 4.06604
     yaw: 0.0
 
   # 第二關
   stage2_entry:
-    x: 0.425
-    y: 3.0
-    yaw: 0.0
+    x: 0.7265
+    y: 1.9595
+    yaw: 3.1416
 
   # stage2_push_clam:
   #   x: 0.925
@@ -33,14 +38,14 @@ named_poses:
   #   yaw: 0.0
 
   stage2_push_clam:
-    x: 0.425
-    y: 3.0
-    yaw: 0.0
+    x: 1.31678
+    y: 1.833777
+    yaw: 3.1416
 
   stage2_move_forward_align:
-    x: 0.425
-    y: 3.0
-    yaw: 0.0
+    x: 1.55437
+    y: 1.84519
+    yaw: 3.1416
 
   # stage2_move_forward_align:
   #   x: 1.225
@@ -48,9 +53,9 @@ named_poses:
   #   yaw: 0.0
 
   stage2_return_point:
-    x: 0.425
+    x: 5.55437
     y: 3.0
-    yaw: 0.0
+    yaw: 3.1416
 
   # stage2_return_point:
   #   x: 1.225
@@ -59,17 +64,17 @@ named_poses:
 
   # 第三關
   stage3_entry:
-    x: 3.425
+    x: 6.55437
     y: 3.0
-    yaw: 0.0
+    yaw: 3.1416
 
   stage3_pick_pose:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
+    x: 5.55437
+    y: 2.0
+    yaw: 3.1416
 
   stage3_stack_pose:
-    x: 0.425
-    y: 1.0
+    x: 0.48007
+    y: 4.06604
     yaw: 0.0
 

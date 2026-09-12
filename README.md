@@ -120,17 +120,18 @@ stateDiagram-v2
 ## 如何使用
 
 ```bash
-# 在 Docker 容器內建置（請勿從 /workspaces 根目錄另外 build robot_fsm）
+# 在 Docker 容器內建置
 cd /workspaces/robot_fsm_v2_ws
 ./build_fsm.sh
+
+# 也可以直接在 workspace 根目錄執行正常的 colcon build
+# colcon build
 
 # 每個新 terminal 只載入這份 workspace
 source /workspaces/robot_fsm_v2_ws/use_fsm.sh
 ros2 pkg prefix robot_fsm
 # 必須顯示 /workspaces/robot_fsm_v2_ws/install/robot_fsm
 
-# 注意：本 workspace 根目錄有 COLCON_IGNORE，避免在 /workspaces 執行
-# colcon build 時又產生第二份 robot_fsm。請一律使用 ./build_fsm.sh。
 # 執行時請 source use_fsm.sh，不要直接 source install/setup.bash。
 
 # 先啟動 tdk_slam_ws（agent / spawn_launch / nav_launch，共 3 個 terminal）

@@ -58,6 +58,7 @@ def generate_launch_description():
             # 宣告成 bool 會丟 InvalidParameterTypeException。
             'enable_navigation': ParameterValue(enable_navigation, value_type=bool),
             'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+            'named_poses_file': named_poses_file,
         }],
     )
 

@@ -13,6 +13,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 add_executable(robot_fsm_main
   src/main.cpp
@@ -46,6 +47,10 @@ ament_target_dependencies(robot_fsm_main
   tf2
   tf2_geometry_msgs
   robot_interfaces
+)
+
+target_link_libraries(robot_fsm_main
+  yaml-cpp
 )
 
 ament_target_dependencies(stm_communication_node

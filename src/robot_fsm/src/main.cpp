@@ -7,6 +7,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int8.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "robot_fsm/common/robot_context.hpp"
 #include "robot_fsm/mission/mission_controller.hpp"
@@ -46,6 +47,55 @@ Pose2D load_pose_param(
   return p;
 }
 
+Pose2D load_named_pose_from_yaml(
+  const rclcpp::Node::SharedPtr& node,
+  const std::string& named_poses_file,
+  const std::string& pose_name,
+  const std::vector<double>& fallback_xyyaw,
+  const std::string& fallback_param_name)
+{
+  if (!named_poses_file.empty()) {
+    try {
+      const YAML::Node root = YAML::LoadFile(named_poses_file);
+      const YAML::Node poses = root["named_poses"];
+
+      if (poses && poses.IsMap() && poses[pose_name]) {
+        const YAML::Node pose_node = poses[pose_name];
+
+        if (pose_node["x"] && pose_node["y"] && pose_node["yaw"]) {
+          Pose2D pose;
+          pose.x = pose_node["x"].as<double>();
+          pose.y = pose_node["y"].as<double>();
+          pose.yaw = pose_node["yaw"].as<double>();
+
+          RCLCPP_INFO(
+            node->get_logger(),
+            "field pose '%s' loaded from named_poses.yaml: [%.3f, %.3f, %.3f]",
+            pose_name.c_str(), pose.x, pose.y, pose.yaw);
+          return pose;
+        }
+
+        RCLCPP_WARN(
+          node->get_logger(),
+          "named pose '%s' in %s is missing x/y/yaw, fallback to parameter '%s'",
+          pose_name.c_str(), named_poses_file.c_str(), fallback_param_name.c_str());
+      } else {
+        RCLCPP_WARN(
+          node->get_logger(),
+          "named pose '%s' not found in %s, fallback to parameter '%s'",
+          pose_name.c_str(), named_poses_file.c_str(), fallback_param_name.c_str());
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(
+        node->get_logger(),
+        "failed to load %s for pose '%s': %s, fallback to parameter '%s'",
+        named_poses_file.c_str(), pose_name.c_str(), e.what(), fallback_param_name.c_str());
+    }
+  }
+
+  return load_pose_param(node, fallback_param_name, fallback_xyyaw);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -69,6 +119,9 @@ int main(int argc, char** argv)
   ros_node->declare_parameter("enable_navigation", true);
   ctx->enable_navigation = ros_node->get_parameter("enable_navigation").as_bool();
 
+  ros_node->declare_parameter<std::string>("named_poses_file", "");
+  const auto named_poses_file = ros_node->get_parameter("named_poses_file").as_string();
+
   if (ctx->enable_navigation) {
     RCLCPP_INFO(ros_node->get_logger(), "[Main] navigation ENABLED");
   } else {
@@ -81,10 +134,16 @@ int main(int argc, char** argv)
 
   // ------------------------------------------------------------------
   // 場地定位點（world frame，場地最左下角為 (0,0)）
-  // "start" 預設 = map 原點在 world 的位置 (0.425, 1.0, 0.0)。
+  // "start" 優先從 named_poses.yaml 的 leave_start_zone 讀取，
+  // 這樣開機定位點會和第一段離開起始區的目標完全一致。
   // TODO: reset_stage1~4 為佔位值，實際重置點座標量測後用 launch/yaml 覆蓋。
   // ------------------------------------------------------------------
-  ctx->field_poses["start"] = load_pose_param(ros_node, "start_pose", {0.425, 1.0, 0.0});
+  ctx->field_poses["start"] = load_named_pose_from_yaml(
+    ros_node,
+    named_poses_file,
+    "leave_start_zone",
+    {2.425, 1.0, 0.0},
+    "start_pose");
   ctx->field_poses["reset_stage1"] = load_pose_param(ros_node, "reset_pose_stage1", {0.425, 1.0, 0.0});
   ctx->field_poses["reset_stage2"] = load_pose_param(ros_node, "reset_pose_stage2", {0.425, 1.0, 0.0});
   ctx->field_poses["reset_stage3"] = load_pose_param(ros_node, "reset_pose_stage3", {0.425, 1.0, 0.0});
