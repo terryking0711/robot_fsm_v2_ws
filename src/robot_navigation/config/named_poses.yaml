@@ -28,23 +28,23 @@ named_poses:
 
   # 第二關
   stage2_entry:
-    x: 0.7265
-    y: 1.9595
+    x: 0.701
+    y: 1.9766
     yaw: 3.1416
 
-  # stage2_push_clam:
-  #   x: 0.925
-  #   y: 3.0
-  #   yaw: 0.0
+  stage2_push_clam_allign:
+    x: 0.7334
+    y: 1.82379
+    yaw: 3.1416
 
   stage2_push_clam:
-    x: 1.31678
-    y: 1.833777
+    x: 1.33
+    y: 1.837
     yaw: 3.1416
 
   stage2_move_forward_align:
-    x: 1.55437
-    y: 1.84519
+    x: 1.5328171396843675
+    y: 1.7916279234790295
     yaw: 3.1416
 
   # stage2_move_forward_align:
@@ -74,7 +74,7 @@ named_poses:
     yaw: 3.1416
 
   stage3_stack_pose:
-    x: 0.48007
-    y: 4.06604
+    x: 0.524321659455427
+    y: 3.567879879121584
     yaw: 0.0
 

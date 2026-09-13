@@ -48,15 +48,16 @@ private:
 
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
 
-  static constexpr double kAllignDurationSec = 1.5;
-  static constexpr double kAllignLinearX = 0.0;
-  static constexpr double kAllignLinearY = -0.1;
-  static constexpr double kAllignAngularZ = 0.0;
+  // 可在這裡直接調整：秒數 / 速度參數，所有定時前進狀態都共用這些值。
+  static constexpr double kPushClamDurationSec = 7.5;
+  static constexpr double kPushClamLinearX = 0.0;
+  static constexpr double kPushClamLinearY = 0.1;
+  static constexpr double kPushClamAngularZ = 0.0;
 
-  static constexpr double kAllignLockDurationSec = 1.0;
-  static constexpr double kAllignLockLinearX = 0.0;
-  static constexpr double kAllignLockLinearY = -0.1;
-  static constexpr double kAllignLockAngularZ = 0.0;
+  static constexpr double kAlignLockDurationSec = 2.1;
+  static constexpr double kAlignLockLinearX = 0.0;
+  static constexpr double kAlignLockLinearY = 0.1;
+  static constexpr double kAlignLockAngularZ = 0.0;
 
   // ---- navigation bookkeeping（給未來要在特定 state 內導航時直接呼叫用）----
   bool nav_goal_sent_;

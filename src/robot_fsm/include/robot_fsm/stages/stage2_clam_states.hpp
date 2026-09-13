@@ -3,7 +3,8 @@
 enum class Stage2State
 {
   S2_ENTER,
-  S2_EXTEND_ARM,    // extend arm
+  S2_EXTEND_ARM_1,    // extend arm
+  S2_EXTEND_ARM_2,    // extend arm
   S2_PUSH_CLAM,     // push clam into the box
   S2_RETRACT_ARM_2,   // retract arm
   S2_LOCKER_DOWN,  // lock the locker down

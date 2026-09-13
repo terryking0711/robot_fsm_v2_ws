@@ -134,16 +134,13 @@ int main(int argc, char** argv)
 
   // ------------------------------------------------------------------
   // 場地定位點（world frame，場地最左下角為 (0,0)）
-  // "start" 優先從 named_poses.yaml 的 leave_start_zone 讀取，
-  // 這樣開機定位點會和第一段離開起始區的目標完全一致。
+  // "start" 固定用 start_pose 參數。
   // TODO: reset_stage1~4 為佔位值，實際重置點座標量測後用 launch/yaml 覆蓋。
   // ------------------------------------------------------------------
-  ctx->field_poses["start"] = load_named_pose_from_yaml(
+  ctx->field_poses["start"] = load_pose_param(
     ros_node,
-    named_poses_file,
-    "leave_start_zone",
-    {2.425, 1.0, 0.0},
-    "start_pose");
+    "start_pose",
+    {2.425, 1.0, 0.0});
   ctx->field_poses["reset_stage1"] = load_pose_param(ros_node, "reset_pose_stage1", {0.425, 1.0, 0.0});
   ctx->field_poses["reset_stage2"] = load_pose_param(ros_node, "reset_pose_stage2", {0.425, 1.0, 0.0});
   ctx->field_poses["reset_stage3"] = load_pose_param(ros_node, "reset_pose_stage3", {0.425, 1.0, 0.0});

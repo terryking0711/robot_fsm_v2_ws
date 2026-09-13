@@ -251,118 +251,12 @@ LocalizeResult MissionController::handle_localize_retry(const char* reason)
 
 LocalizeResult MissionController::localize_at(const Pose2D& target_world, bool force)
 {
-  // ---- 導航總開關（RobotContext::enable_navigation）----
-  // 與導航共用同一個開關：false 時不對 localization_manager 送
-  // /init_pose_cmd，直接視為定位成功。
-  if (!ctx_->enable_navigation) {
-    RCLCPP_INFO(
-      ctx_->node->get_logger(),
-      "[Mission][Localize] navigation disabled, skip localization");
-    return LocalizeResult::SUCCESS;
-  }
+  (void)target_world;
+  (void)force;
 
-  loc_target_ = target_world;
-
-  switch (loc_phase_) {
-
-    // ------------------------------------------------------------------
-    // 進入點：先問「有沒有必要重置」
-    // ------------------------------------------------------------------
-    case LocPhase::IDLE: {
-      if (!force && is_localization_healthy(target_world, kLocTolXy, kLocTolYaw)) {
-        RCLCPP_INFO(
-          ctx_->node->get_logger(),
-          "[Mission][Localize] already localized near target, "
-          "skip trajectory restart");
-        loc_retry_count_ = 0;
-        return LocalizeResult::SUCCESS;
-      }
-
-      if (force) {
-        RCLCPP_WARN(
-          ctx_->node->get_logger(),
-          "[Mission][Localize] forced relocalization requested");
-      }
-
-      loc_phase_ = LocPhase::SETTLE;
-      loc_settle_ticks_ = 0;
-      return LocalizeResult::RUNNING;
-    }
-
-    // ------------------------------------------------------------------
-    // 停穩：新 trajectory 的 extrapolator 沒有歷史資料，動態下重置必爛。
-    // 順便閃掉 STM32 在運動時噴 NaN odom 的路徑。
-    // ------------------------------------------------------------------
-    case LocPhase::SETTLE: {
-      loc_settle_ticks_++;
-      if (loc_settle_ticks_ < kLocSettleTicks) {
-        return LocalizeResult::RUNNING;
-      }
-
-      send_init_pose_cmd(target_world);
-
-      loc_phase_ = LocPhase::WAIT_STATUS;
-      loc_wait_ticks_ = 0;
-      return LocalizeResult::RUNNING;
-    }
-
-    // ------------------------------------------------------------------
-    // 等 localization_manager 回報
-    // ------------------------------------------------------------------
-    case LocPhase::WAIT_STATUS: {
-      if (ctx_->init_status_received) {
-        const bool ok = ctx_->init_status_ok;
-        ctx_->init_status_received = false;
-
-        if (!ok) {
-          return handle_localize_retry("localization_manager reported failure, resend");
-        }
-
-        RCLCPP_INFO(
-          ctx_->node->get_logger(),
-          "[Mission][Localize] manager reported OK, waiting %.1f s to verify convergence",
-          kLocVerifyTicks / 10.0);
-
-        loc_phase_ = LocPhase::VERIFY;
-        loc_verify_ticks_ = 0;
-        return LocalizeResult::RUNNING;
-      }
-
-      // 保險 timeout：manager 最慢 5 秒一定回，超過視為掉包
-      loc_wait_ticks_++;
-      if (loc_wait_ticks_ > kLocTimeoutTicks) {
-        return handle_localize_retry("no status from localization_manager, resend");
-      }
-
-      return LocalizeResult::RUNNING;
-    }
-
-    // ------------------------------------------------------------------
-    // 驗收：manager 說 ok 不代表 pose graph 已經收斂。
-    // 等一段時間後自己查 TF，確認估計真的落在目標附近才放行。
-    // ------------------------------------------------------------------
-    case LocPhase::VERIFY: {
-      loc_verify_ticks_++;
-      if (loc_verify_ticks_ < kLocVerifyTicks) {
-        return LocalizeResult::RUNNING;
-      }
-
-      // 容差比 health check 寬：重置後 cartographer 會 scan match 到真實位置，
-      // 跟我們給的名目 pose 本來就會有落差。
-      if (is_localization_healthy(target_world, kLocVerifyTolXy, kLocVerifyTolYaw)) {
-        RCLCPP_INFO(
-          ctx_->node->get_logger(),
-          "[Mission][Localize] localization SUCCESS (converged)");
-        loc_phase_ = LocPhase::IDLE;
-        loc_retry_count_ = 0;
-        return LocalizeResult::SUCCESS;
-      }
-
-      return handle_localize_retry("pose did not converge after restart, resend");
-    }
-  }
-
-  return LocalizeResult::RUNNING;
+  // 不再做開機定位或場外重定位，也不再送 /init_pose_cmd。
+  // 直接放行，讓 cartographer 維持目前已經收斂的 trajectory。
+  return LocalizeResult::SUCCESS;
 }
 
 // ============================================================================
@@ -669,12 +563,11 @@ void MissionController::tick()
       break;
 
     case MissionState::LOCALIZE: {
-      // 開機定位：cartographer 若已經在起點附近收斂，就完全不要碰它。
-      // force = false → 先做 health check，健康就直接放行。
+      // 不做開機重定位，直接放行。
       switch (localize_at(ctx_->field_poses.at("start"), /*force=*/false)) {
         case LocalizeResult::SUCCESS:
           RCLCPP_INFO(ctx_->node->get_logger(),
-            "[Mission] LOCALIZE done, localization ready");
+            "[Mission] LOCALIZE skipped, keep existing cartographer trajectory");
           state_ = MissionState::WAIT_START;
           break;
         case LocalizeResult::FAILURE:
@@ -695,15 +588,15 @@ void MissionController::tick()
 
     case MissionState::LEAVE_START_ZONE:
       if (leave_start_zone()) {
-        state_ = MissionState::STAGE1_WETLAND;
-      }
-      break;
-
-    case MissionState::STAGE1_WETLAND:
-      if (stage1_fsm_->tick()) {
         state_ = MissionState::TRANSITION_TO_STAGE2;
       }
       break;
+
+    // case MissionState::STAGE1_WETLAND:
+    //   if (stage1_fsm_->tick()) {
+    //     state_ = MissionState::TRANSITION_TO_STAGE2;
+    //   }
+    //   break;
 
     case MissionState::TRANSITION_TO_STAGE2:
       if (transition_to_named_pose("stage2_entry", 30.0)) {
@@ -730,13 +623,12 @@ void MissionController::tick()
       break;
 
     case MissionState::RELOCALIZE: {
-      // 機器人已被隊員搬到重置點，目前的估計必定是錯的：
-      // force = true → 跳過 health check，強制重建 trajectory。
+      // 不再重建 trajectory；直接回到對應關卡。
       switch (localize_at(ctx_->field_poses.at(reset_pose_key_), /*force=*/true)) {
         case LocalizeResult::SUCCESS:
           RCLCPP_INFO(
             ctx_->node->get_logger(),
-            "[Mission] RELOCALIZE done, resume stage");
+            "[Mission] RELOCALIZE skipped, resume stage");
           state_ = reset_resume_state_;
           break;
         case LocalizeResult::FAILURE:
