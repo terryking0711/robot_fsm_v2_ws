@@ -64,9 +64,9 @@ named_poses:
 
   # 第三關
   stage3_entry:
-    x: 6.55437
-    y: 3.0
-    yaw: 3.1416
+    x: 0.524321659455427
+    y: 3.567879879121584
+    yaw: 0.0
 
   stage3_pick_pose:
     x: 5.55437

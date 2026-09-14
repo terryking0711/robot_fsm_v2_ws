@@ -114,7 +114,72 @@ bool MissionController::wait_start()
 
 bool MissionController::leave_start_zone()
 {
+  if (!run_arm_lift_sequence()) {
+    return false;
+  }
   return transition_to_named_pose("leave_start_zone", 20.0);
+}
+
+void MissionController::publish_mechanism_command(
+  uint16_t command_id,
+  const std::string& state_name,
+  const std::string& action_name)
+{
+  robot_interfaces::msg::MechanismCommand msg;
+  msg.command_id = command_id;
+  msg.command_name = action_name;
+  msg.arg_json =
+    R"({"stage":"mission","state":")" + state_name +
+    R"(","action":")" + action_name + R"(","extra":{}})";
+
+  ctx_->mechanism_cmd_pub->publish(msg);
+
+  RCLCPP_INFO(
+    ctx_->node->get_logger(),
+    "[Mission][STM_CMD] id=%u name=%s json=%s",
+    msg.command_id,
+    msg.command_name.c_str(),
+    msg.arg_json.c_str());
+}
+
+bool MissionController::run_arm_lift_sequence()
+{
+  switch (arm_lift_phase_) {
+    case ArmLiftPhase::SEND_201:
+      publish_mechanism_command(201, "S2_LIFT_ARM", "lift_arm");
+      arm_lift_wait_start_ = ctx_->node->now();
+      arm_lift_phase_ = ArmLiftPhase::WAIT_1;
+      return false;
+
+    case ArmLiftPhase::WAIT_1:
+      if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
+        return false;
+      }
+      arm_lift_phase_ = ArmLiftPhase::SEND_2000;
+      return false;
+
+    case ArmLiftPhase::SEND_2000:
+      publish_mechanism_command(2000, "S2_LIFT_ARM", "lift_arm");
+      arm_lift_wait_start_ = ctx_->node->now();
+      arm_lift_phase_ = ArmLiftPhase::WAIT_2;
+      return false;
+
+    case ArmLiftPhase::WAIT_2:
+      if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
+        return false;
+      }
+      arm_lift_phase_ = ArmLiftPhase::SEND_202;
+      return false;
+
+    case ArmLiftPhase::SEND_202:
+      publish_mechanism_command(202, "S2_LIFT_ARM", "lift_arm");
+      arm_lift_phase_ = ArmLiftPhase::DONE;
+      return false;
+
+    case ArmLiftPhase::DONE:
+    default:
+      return true;
+  }
 }
 
 // ============================================================================

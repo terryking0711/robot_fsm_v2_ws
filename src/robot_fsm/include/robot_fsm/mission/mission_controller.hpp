@@ -39,6 +39,13 @@ private:
   bool transition_to_named_pose(const std::string& target_name, float timeout_sec);
   bool finish_decision();
 
+  // ---- 離開出發區前的手臂抬起序列（tick-based，含間隔等待）----
+  bool run_arm_lift_sequence();
+  void publish_mechanism_command(
+    uint16_t command_id,
+    const std::string& state_name,
+    const std::string& action_name);
+
   // ---- localization（對 localization_manager 的 tick-based client）----
   //
   // 對 cartographer 而言「重新初始化」= /finish_trajectory + /start_trajectory，
@@ -136,4 +143,18 @@ private:
   // ---- reset bookkeeping ----
   MissionState reset_resume_state_;   // RELOCALIZE 成功後要回到的關卡
   std::string reset_pose_key_;        // field_poses 內的重置點 key
+
+  // ---- 離開出發區前的手臂抬起序列 ----
+  enum class ArmLiftPhase
+  {
+    SEND_201,
+    WAIT_1,
+    SEND_2000,
+    WAIT_2,
+    SEND_202,
+    DONE
+  };
+  ArmLiftPhase arm_lift_phase_ = ArmLiftPhase::SEND_201;
+  rclcpp::Time arm_lift_wait_start_;
+  static constexpr double kArmLiftWaitSec = 2.0;
 };

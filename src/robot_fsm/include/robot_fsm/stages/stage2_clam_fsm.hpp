@@ -50,11 +50,11 @@ private:
 
   // 可在這裡直接調整：秒數 / 速度參數，所有定時前進狀態都共用這些值。
   static constexpr double kPushClamDurationSec = 7.5;
-  static constexpr double kPushClamLinearX = 0.0;
-  static constexpr double kPushClamLinearY = 0.1;
+  static constexpr double kPushClamLinearX = -0.1;
+  static constexpr double kPushClamLinearY = 0.0;
   static constexpr double kPushClamAngularZ = 0.0;
 
-  static constexpr double kAlignLockDurationSec = 2.1;
+  static constexpr double kAlignLockDurationSec = 0.25;
   static constexpr double kAlignLockLinearX = 0.0;
   static constexpr double kAlignLockLinearY = 0.1;
   static constexpr double kAlignLockAngularZ = 0.0;
