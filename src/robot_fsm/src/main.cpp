@@ -12,7 +12,9 @@
 #include "robot_fsm/common/robot_context.hpp"
 #include "robot_fsm/mission/mission_controller.hpp"
 #include "robot_interfaces/msg/mechanism_feedback.hpp"
+#include "robot_interfaces/msg/straw_pick_status.hpp"
 #include "robot_interfaces/msg/vision_scene_state.hpp"
+#include "straw_interfaces/msg/straw_target.hpp"
 
 namespace
 {
@@ -96,6 +98,70 @@ Pose2D load_named_pose_from_yaml(
   return load_pose_param(node, fallback_param_name, fallback_xyyaw);
 }
 
+// 讀 fsm_side_<side>.yaml 的 command_id_remap（程式代號 -> 該場地代號）。
+// 讀不到就維持空表 = 全部照程式代號送出。
+void load_command_id_remap(
+  const rclcpp::Node::SharedPtr& node,
+  const std::string& fsm_side_file,
+  std::map<uint16_t, uint16_t>& remap)
+{
+  if (fsm_side_file.empty()) {
+    RCLCPP_WARN(node->get_logger(), "[Main] fsm_side_file is empty, no command_id remap");
+    return;
+  }
+
+  try {
+    const YAML::Node table = YAML::LoadFile(fsm_side_file)["command_id_remap"];
+    if (table && table.IsMap()) {
+      for (auto it = table.begin(); it != table.end(); ++it) {
+        remap[it->first.as<uint16_t>()] = it->second.as<uint16_t>();
+      }
+    }
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(
+      node->get_logger(),
+      "[Main] failed to load command_id_remap from %s: %s", fsm_side_file.c_str(), e.what());
+    return;
+  }
+
+  RCLCPP_INFO(
+    node->get_logger(),
+    "[Main] %zu command_id remap(s) from %s", remap.size(), fsm_side_file.c_str());
+  for (const auto& [from, to] : remap) {
+    RCLCPP_INFO(node->get_logger(), "[Main]   command_id %u -> %u", from, to);
+  }
+}
+
+// 讀 fsm_side_<side>.yaml 的單一數值（例如 stage2_push_clam_x_sign）。
+// 讀不到就用 default_value。
+double load_fsm_side_double(
+  const rclcpp::Node::SharedPtr& node,
+  const std::string& fsm_side_file,
+  const std::string& key,
+  double default_value)
+{
+  double value = default_value;
+  if (!fsm_side_file.empty()) {
+    try {
+      const YAML::Node v = YAML::LoadFile(fsm_side_file)[key];
+      if (v) {
+        value = v.as<double>();
+      } else {
+        RCLCPP_WARN(
+          node->get_logger(), "[Main] '%s' not found in %s, use default %.3f",
+          key.c_str(), fsm_side_file.c_str(), default_value);
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(
+        node->get_logger(), "[Main] failed to load '%s' from %s: %s, use default %.3f",
+        key.c_str(), fsm_side_file.c_str(), e.what(), default_value);
+    }
+  }
+
+  RCLCPP_INFO(node->get_logger(), "[Main] %s = %.3f", key.c_str(), value);
+  return value;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -122,6 +188,22 @@ int main(int argc, char** argv)
   ros_node->declare_parameter<std::string>("named_poses_file", "");
   const auto named_poses_file = ros_node->get_parameter("named_poses_file").as_string();
 
+  // ------------------------------------------------------------------
+  // 比賽場地 normal / mirror（由 robot_bringup.launch.py field_side:=... 依
+  // /workspaces/field_config.yaml 決定 named_poses_file 與 fsm_side_file）
+  // ------------------------------------------------------------------
+  ros_node->declare_parameter<std::string>("field_side", "normal");
+  ros_node->declare_parameter<std::string>("fsm_side_file", "");
+  ctx->field_side = ros_node->get_parameter("field_side").as_string();
+  RCLCPP_WARN(
+    ros_node->get_logger(),
+    "[Main] FIELD SIDE = %s (named_poses_file: %s)",
+    ctx->field_side.c_str(), named_poses_file.c_str());
+  const auto fsm_side_file = ros_node->get_parameter("fsm_side_file").as_string();
+  load_command_id_remap(ros_node, fsm_side_file, ctx->command_id_remap);
+  ctx->stage2_push_clam_x_sign =
+    load_fsm_side_double(ros_node, fsm_side_file, "stage2_push_clam_x_sign", 1.0);
+
   if (ctx->enable_navigation) {
     RCLCPP_INFO(ros_node->get_logger(), "[Main] navigation ENABLED");
   } else {
@@ -134,17 +216,22 @@ int main(int argc, char** argv)
 
   // ------------------------------------------------------------------
   // 場地定位點（world frame，場地最左下角為 (0,0)）
-  // "start" 固定用 start_pose 參數。
-  // TODO: reset_stage1~4 為佔位值，實際重置點座標量測後用 launch/yaml 覆蓋。
+  // 從該場地的 named_poses_<side>.yaml 讀 start_pose / reset_pose_stage1~4，
+  // 找不到才退回同名 ROS parameter（預設值如下）。
   // ------------------------------------------------------------------
-  ctx->field_poses["start"] = load_pose_param(
-    ros_node,
-    "start_pose",
-    {2.425, 1.0, 0.0});
-  ctx->field_poses["reset_stage1"] = load_pose_param(ros_node, "reset_pose_stage1", {0.425, 1.0, 0.0});
-  ctx->field_poses["reset_stage2"] = load_pose_param(ros_node, "reset_pose_stage2", {0.425, 1.0, 0.0});
-  ctx->field_poses["reset_stage3"] = load_pose_param(ros_node, "reset_pose_stage3", {0.425, 1.0, 0.0});
-  ctx->field_poses["reset_stage4"] = load_pose_param(ros_node, "reset_pose_stage4", {0.425, 1.0, 0.0});
+  ctx->field_poses["start"] = load_named_pose_from_yaml(
+    ros_node, named_poses_file, "start_pose", {2.425, 1.0, 0.0}, "start_pose");
+  ctx->field_poses["reset_stage1"] = load_named_pose_from_yaml(
+    ros_node, named_poses_file, "reset_pose_stage1", {0.425, 1.0, 0.0}, "reset_pose_stage1");
+  ctx->field_poses["reset_stage2"] = load_named_pose_from_yaml(
+    ros_node, named_poses_file, "reset_pose_stage2", {0.425, 1.0, 0.0}, "reset_pose_stage2");
+  ctx->field_poses["reset_stage3"] = load_named_pose_from_yaml(
+    ros_node, named_poses_file, "reset_pose_stage3", {0.425, 1.0, 0.0}, "reset_pose_stage3");
+  ctx->field_poses["reset_stage4"] = load_named_pose_from_yaml(
+    ros_node, named_poses_file, "reset_pose_stage4", {0.425, 1.0, 0.0}, "reset_pose_stage4");
+
+  // FSM 唯一的 /cmd_vel publisher（各 stage 共用，見 RobotContext::cmd_vel_pub）
+  ctx->cmd_vel_pub = ros_node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
 
   // topic = /vision/scene_state 還沒創立 publisher
   auto vision_sub =
@@ -171,6 +258,41 @@ int main(int argc, char** argv)
       [ctx](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
         std::scoped_lock lock(ctx->data_mutex);
         ctx->latest_final_pose = *msg;
+      });
+
+  // ---- 第三關用 ----
+  // world frame 機器人位姿（tdk_slam_ws robot_pose_publisher）
+  auto robot_pose_sub =
+    ros_node->create_subscription<geometry_msgs::msg::PoseStamped>(
+      "/robot_pose", 10,
+      [ctx](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+        std::scoped_lock lock(ctx->data_mutex);
+        ctx->latest_robot_pose = *msg;
+        ctx->latest_robot_pose_time = ctx->node->now();
+      });
+
+  // 相機稻草捲偵測（TDK-straw straw_node）。
+  // 用 SensorDataQoS（best effort），不論對方是 reliable 或 best effort 都接得到。
+  ros_node->declare_parameter<std::string>("straw_target_topic", "/straw/target");
+  auto straw_target_sub =
+    ros_node->create_subscription<straw_interfaces::msg::StrawTarget>(
+      ros_node->get_parameter("straw_target_topic").as_string(),
+      rclcpp::SensorDataQoS(),
+      [ctx](const straw_interfaces::msg::StrawTarget::SharedPtr msg) {
+        std::scoped_lock lock(ctx->data_mutex);
+        ctx->latest_straw_target = *msg;
+        ctx->latest_straw_target_time = ctx->node->now();
+      });
+
+  // 機構 STM 的自動夾取狀態（micro-ROS，可能是 best effort，所以同樣用 SensorDataQoS）
+  auto straw_pick_status_sub =
+    ros_node->create_subscription<robot_interfaces::msg::StrawPickStatus>(
+      "/mechanism/straw_pick_status",
+      rclcpp::SensorDataQoS(),
+      [ctx](const robot_interfaces::msg::StrawPickStatus::SharedPtr msg) {
+        std::scoped_lock lock(ctx->data_mutex);
+        ctx->latest_straw_pick_status = *msg;
+        ctx->latest_straw_pick_status_time = ctx->node->now();
       });
 
   // localization_manager 的初始化結果回報

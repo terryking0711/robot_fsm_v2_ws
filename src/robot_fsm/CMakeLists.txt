@@ -13,6 +13,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(robot_interfaces REQUIRED)
+find_package(straw_interfaces REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 add_executable(robot_fsm_main
@@ -28,6 +29,17 @@ add_executable(robot_fsm_main
 target_include_directories(robot_fsm_main PRIVATE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
+)
+
+add_executable(straw_align_test
+  src/tools/straw_align_test.cpp
+)
+
+ament_target_dependencies(straw_align_test
+  rclcpp
+  geometry_msgs
+  robot_interfaces
+  straw_interfaces
 )
 
 add_executable(stm_communication_node
@@ -47,6 +59,7 @@ ament_target_dependencies(robot_fsm_main
   tf2
   tf2_geometry_msgs
   robot_interfaces
+  straw_interfaces
 )
 
 target_link_libraries(robot_fsm_main
@@ -62,6 +75,7 @@ ament_target_dependencies(stm_communication_node
 install(TARGETS
   robot_fsm_main
   stm_communication_node
+  straw_align_test
   DESTINATION lib/${PROJECT_NAME}
 )
 

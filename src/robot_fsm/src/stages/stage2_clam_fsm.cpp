@@ -8,7 +8,7 @@ Stage2ClamFSM::Stage2ClamFSM(std::shared_ptr<RobotContext> ctx)
   tick_count_(0),
   state_command_sent_(false),
   state_enter_time_(ctx_->node->now()),
-  cmd_vel_pub_(ctx_->node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10)),
+  timed_cmd_vel_started_(false),
   nav_goal_sent_(false),
   nav_done_(false),
   nav_success_(false),
@@ -36,6 +36,7 @@ void Stage2ClamFSM::enter_state(Stage2State next_state)
   tick_count_ = 0;
   state_command_sent_ = false;
   nav_arrived_ = false;
+  timed_cmd_vel_started_ = false;
   state_enter_time_ = ctx_->node->now();
 }
 
@@ -45,7 +46,7 @@ void Stage2ClamFSM::publish_cmd_vel(double linear_x, double linear_y, double ang
   msg.linear.x = linear_x;
   msg.linear.y = linear_y;
   msg.angular.z = angular_z;
-  cmd_vel_pub_->publish(msg);
+  ctx_->cmd_vel_pub->publish(msg);
 }
 
 bool Stage2ClamFSM::run_timed_cmd_vel_state(
@@ -56,6 +57,16 @@ bool Stage2ClamFSM::run_timed_cmd_vel_state(
   double angular_z,
   Stage2State next_state)
 {
+  // 剛結束導航時 velocity_smoother 還在發減速 / 0 速度，先等它停下來再開始計時，
+  // 不然兩邊的 /cmd_vel 會交錯。
+  if (!timed_cmd_vel_started_) {
+    if (!ctx_->nav_cmd_vel_settled()) {
+      return false;
+    }
+    timed_cmd_vel_started_ = true;
+    state_enter_time_ = ctx_->node->now();
+  }
+
   const double elapsed_sec = (ctx_->node->now() - state_enter_time_).seconds();
 
   if (elapsed_sec < duration_sec) {
@@ -156,6 +167,7 @@ bool Stage2ClamFSM::navigate_to_named_pose(
       [this](const rclcpp_action::ClientGoalHandle<NavigateAction>::WrappedResult& result)
       {
         nav_done_ = true;
+        ctx_->last_nav_end_time = ctx_->node->now();
 
         if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
           nav_success_ = result.result->success;
@@ -239,7 +251,7 @@ void Stage2ClamFSM::publish_state_command(
   }
 
   robot_interfaces::msg::MechanismCommand msg;
-  msg.command_id = command_id;
+  msg.command_id = ctx_->side_command_id(command_id);
   msg.command_name = action_name;
   msg.arg_json =
     R"({"stage":"stage2_clam","state":")" + state_name +
@@ -279,7 +291,8 @@ bool Stage2ClamFSM::tick()
       }
       return false;
 
-    // 2001 -> 鎖定箱子
+    // 2001 -> locker 往下轉
+    // 鏡像場地的代號不同：改 robot_fsm/config/fsm_side_mirror.yaml 的 command_id_remap
     case Stage2State::S2_LOCKER_DOWN:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCKER_DOWN 鎖定箱子");
       publish_state_command(2001, "S2_LOCKER_DOWN", "lock_locker");
@@ -302,14 +315,13 @@ bool Stage2ClamFSM::tick()
       publish_state_command(2201, "S2_EXTEND_ARM_2", "extend_arm");
       if (wait_ticks(50)) enter_state(Stage2State::S2_PUSH_CLAM);
       return false;
-
     
      
     case Stage2State::S2_PUSH_CLAM:
       return run_timed_cmd_vel_state(
         "PUSH_CLAM",
         kPushClamDurationSec,
-        kPushClamLinearX,
+        kPushClamLinearX * ctx_->stage2_push_clam_x_sign,
         kPushClamLinearY,
         kPushClamAngularZ,
         Stage2State::S2_LIFT_ARM);
@@ -346,23 +358,34 @@ bool Stage2ClamFSM::tick()
     
 
     // 203 -> 鎖定箱子
+    // STM 沒有回報完成（/mechanism/feedback 沒人發），只能靠等待時間。
+    // 203 還沒做完就送 204，STM 會吃不到 / 做錯 204，所以這裡要等到鎖定動作確實完成。
     case Stage2State::S2_LOCK_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCK_BOX 鎖定箱子");
       publish_state_command(203, "S2_LOCK_BOX", "lock_box");
-      if (wait_ticks(20)) enter_state(Stage2State::S2_ROTATE_BOX_1);
+      if (wait_ticks(70)) enter_state(Stage2State::S2_ROTATE_BOX_1);
       return false;
 
     // 204, 205 -> 翻轉箱子
     case Stage2State::S2_ROTATE_BOX_1:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_1 翻轉箱子");
-      // publish_state_command(204, "S2_ROTATE_BOX_1", "rotate_box_1");
-      if (wait_ticks(40)) enter_state(Stage2State::S2_ROTATE_BOX_2);
+      publish_state_command(204, "S2_ROTATE_BOX_1", "rotate_box_1");
+      if (wait_ticks(100)) enter_state(Stage2State::S2_MOVE_BACK);
       return false;
+    
+    case Stage2State::S2_MOVE_BACK: {
+      if (!navigate_to_named_pose("stage2_move_back", 15.0f)) {
+        return false;
+      }
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_BACK 導航後退完成");
+      enter_state(Stage2State::S2_ROTATE_BOX_2);
+      return false;
+    }
 
     case Stage2State::S2_ROTATE_BOX_2:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_2 翻轉箱子");
-      // publish_state_command(205, "S2_ROTATE_BOX_2", "rotate_box_2");
-      if (wait_ticks(40)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
+      publish_state_command(205, "S2_ROTATE_BOX_2", "rotate_box_2");
+      if (wait_ticks(100)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
       return false;
       
     case Stage2State::S2_MOVE_TO_RETURN:

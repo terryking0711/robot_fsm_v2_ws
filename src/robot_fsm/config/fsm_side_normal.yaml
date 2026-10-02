@@ -1,0 +1,9 @@
+# 【NORMAL 場地】robot_fsm_main 的場地專屬設定（field_config.yaml 的 sides.normal）
+#
+# command_id_remap：送給 STM 的 command_id 換成別的代號。
+#   normal 場地就是程式裡寫的代號，所以這裡留空。
+#   格式與說明見 fsm_side_mirror.yaml。
+command_id_remap: {}
+
+# S2_PUSH_CLAM 的 linear.x 方向（normal = 1.0，mirror 是 -1.0，說明見 fsm_side_mirror.yaml）
+stage2_push_clam_x_sign: 1.0

@@ -14,6 +14,7 @@ enum class Stage2State
   S2_LIFT_ARM,        // lift arm
   S2_LOCK_BOX,        // lock the box
   S2_ROTATE_BOX_1,     // rotate box upward and downward
+  S2_MOVE_BACK,
   S2_ROTATE_BOX_2,     // rotate box upward and downward
   S2_MOVE_TO_RETURN,  // move to return point
   S2_DROP_BOX,

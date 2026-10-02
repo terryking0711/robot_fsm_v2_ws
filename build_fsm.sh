@@ -26,7 +26,6 @@ colcon --log-base "$workspace_dir/log" build \
   --base-paths "$workspace_dir/src" \
   --build-base "$workspace_dir/build" \
   --install-base "$workspace_dir/install" \
-  --symlink-install \
   --event-handlers console_cohesion+
 
 set +u

@@ -1,0 +1,24 @@
+# 【MIRROR 場地】robot_fsm_main 的場地專屬設定（field_config.yaml 的 sides.mirror）
+#
+# command_id_remap：鏡像場地時，送給 STM 的 command_id 換成別的代號。
+#   格式  <程式裡寫的代號>: <mirror 要送的代號>
+#   沒列在這裡的代號照原樣送出。
+#   robot_fsm_main 所有送 STM 指令的地方（mission / 各 stage 的
+#   publish_state_command）都會經過這張表，所以要新增鏡像差異時
+#   只要在這裡加一行，不用改程式、不用重新編譯。
+#   ⚠ 同一個代號在程式中多處使用時（例如 2000 同時是 S2_ENTER 和
+#     mission 的 S2_LIFT_ARM），這些地方會一起被換掉。
+#
+# 啟動時 robot_fsm_main 會把讀到的每一筆 remap 印在 log 上，可以確認有吃到。
+command_id_remap:
+  2001: 2021   # S2_LOCKER_DOWN (lock_locker) -- TODO: 改成 mirror 的代號
+  203: 223
+  204: 224
+  205: 225
+  206: 226
+
+
+
+# S2_PUSH_CLAM 的 linear.x 方向：mirror 場地和 normal 相反
+#   實際送出 = Stage2ClamFSM::kPushClamLinearX (-0.1) * 這個值
+stage2_push_clam_x_sign: -1.0

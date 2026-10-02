@@ -10,23 +10,24 @@
 #       就會自動把 goal 轉進 map frame。
 #   * use_sim_time:  false（實車）
 
-import os
+import yaml
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-def generate_launch_description():
-    pkg_share = get_package_share_directory('robot_navigation')
+FIELD_CONFIG_FILE = '/workspaces/field_config.yaml'
 
-    default_named_poses_file = os.path.join(
-        pkg_share,
-        'config',
-        'named_poses.yaml'
-    )
+
+def generate_launch_description():
+    # 單獨啟動時預設用 field_config.yaml default_side 的 named_poses；
+    # 從 robot_bringup.launch.py 進來時會直接指定該場地的 named_poses_file。
+    with open(FIELD_CONFIG_FILE) as f:
+        field_config = yaml.safe_load(f)
+    default_named_poses_file = \
+        field_config['sides'][field_config['default_side']]['named_poses_file']
 
     named_poses_file = LaunchConfiguration('named_poses_file')
     use_sim_time = LaunchConfiguration('use_sim_time')

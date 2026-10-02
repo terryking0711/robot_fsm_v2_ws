@@ -126,7 +126,7 @@ void MissionController::publish_mechanism_command(
   const std::string& action_name)
 {
   robot_interfaces::msg::MechanismCommand msg;
-  msg.command_id = command_id;
+  msg.command_id = ctx_->side_command_id(command_id);
   msg.command_name = action_name;
   msg.arg_json =
     R"({"stage":"mission","state":")" + state_name +
@@ -146,35 +146,35 @@ bool MissionController::run_arm_lift_sequence()
 {
   switch (arm_lift_phase_) {
     case ArmLiftPhase::SEND_201:
-      publish_mechanism_command(201, "S2_LIFT_ARM", "lift_arm");
+      // publish_mechanism_command(201, "S2_LIFT_ARM", "lift_arm");
       arm_lift_wait_start_ = ctx_->node->now();
-      arm_lift_phase_ = ArmLiftPhase::WAIT_1;
-      return false;
-
-    case ArmLiftPhase::WAIT_1:
-      if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
-        return false;
-      }
-      arm_lift_phase_ = ArmLiftPhase::SEND_2000;
-      return false;
-
-    case ArmLiftPhase::SEND_2000:
-      publish_mechanism_command(2000, "S2_LIFT_ARM", "lift_arm");
-      arm_lift_wait_start_ = ctx_->node->now();
-      arm_lift_phase_ = ArmLiftPhase::WAIT_2;
-      return false;
-
-    case ArmLiftPhase::WAIT_2:
-      if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
-        return false;
-      }
-      arm_lift_phase_ = ArmLiftPhase::SEND_202;
-      return false;
-
-    case ArmLiftPhase::SEND_202:
-      publish_mechanism_command(202, "S2_LIFT_ARM", "lift_arm");
       arm_lift_phase_ = ArmLiftPhase::DONE;
       return false;
+
+    // case ArmLiftPhase::WAIT_1:
+    //   if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
+    //     return false;
+    //   }
+    //   arm_lift_phase_ = ArmLiftPhase::SEND_2000;
+    //   return false;
+
+    // case ArmLiftPhase::SEND_2000:
+    //   publish_mechanism_command(2000, "S2_LIFT_ARM", "lift_arm");
+    //   arm_lift_wait_start_ = ctx_->node->now();
+    //   arm_lift_phase_ = ArmLiftPhase::WAIT_2;
+    //   return false;
+
+    // case ArmLiftPhase::WAIT_2:
+    //   if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
+    //     return false;
+    //   }
+    //   arm_lift_phase_ = ArmLiftPhase::SEND_202;
+    //   return false;
+
+    // case ArmLiftPhase::SEND_202:
+    //   publish_mechanism_command(202, "S2_LIFT_ARM", "lift_arm");
+    //   arm_lift_phase_ = ArmLiftPhase::DONE;
+    //   return false;
 
     case ArmLiftPhase::DONE:
     default:
@@ -507,6 +507,7 @@ bool MissionController::transition_to_named_pose(
       [this](const rclcpp_action::ClientGoalHandle<NavigateAction>::WrappedResult& result)
       {
         nav_done_ = true;
+        ctx_->last_nav_end_time = ctx_->node->now();
 
         // navigation_server 現在使用正確的 action 語意：
         //   成功 -> SUCCEEDED、失敗/逾時 -> ABORTED、取消 -> CANCELED。

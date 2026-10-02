@@ -201,7 +201,7 @@ void Stage1WetlandFSM::publish_state_command(
   }
 
   robot_interfaces::msg::MechanismCommand msg;
-  msg.command_id = command_id;
+  msg.command_id = ctx_->side_command_id(command_id);
   msg.command_name = action_name;
   msg.arg_json =
     R"({"stage":"stage1_wetland","state":")" + state_name +

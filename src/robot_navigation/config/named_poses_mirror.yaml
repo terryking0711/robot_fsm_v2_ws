@@ -1,0 +1,141 @@
+# 【MIRROR 場地】field_config.yaml 的 sides.mirror 使用這份檔案
+# ⚠ 目前內容是從 normal 複製過來的，還沒量測 mirror 場地，
+#   比賽前請用 named_pose_recorder（field_side:=mirror）把每個點重新量測填入。
+# ============================================================================
+# named poses（導航目標點）
+#
+# ⚠ 座標系已從 map frame 改為 world frame（場地最左下角為 (0,0)）。
+#    navigation_server 會把 goal 的 frame_id 設為 "world"，
+#    Nav2 planner_server 透過 world -> map 靜態 TF 自動轉換。
+#
+# 換算關係：world = map + (0.425, 1.0)，yaw 不變。
+# 以下數值是把原本 map frame 的佔位值直接加上偏移換算而來，
+# 實際比賽點位量測後再更新。
+# ============================================================================
+named_poses:
+  start_pose:
+    x: 0.44997966829918495
+    y: 1.0241514083483043
+    yaw: 0.0
+
+  reset_pose_stage1:
+    x: 0.425
+    y: 1.0
+    yaw: 0.0
+
+  reset_pose_stage2:
+    x: 0.425
+    y: 1.0
+    yaw: 0.0
+
+  reset_pose_stage3:
+    x: 0.425
+    y: 1.0
+    yaw: 0.0
+
+  reset_pose_stage4:
+    x: 0.425
+    y: 1.0
+    yaw: 0.0
+
+  
+  leave_start_zone:
+    x: 0.44997966829918495
+    y: 1.0241514083483043
+    yaw: 0.0
+
+  # 第一關
+  stage1_entry:
+    x: 2.48007
+    y: 4.06604
+    yaw: 0.0
+
+  # 第二關
+  stage2_entry:
+    x: 2.4079140559868506
+    y: 1.21477559974762
+    yaw: 4.695
+
+  stage2_push_clam_allign:
+    x: 2.695
+    y: 1.1404533276007005
+    yaw: 4.695
+
+  stage2_move_forward_align:
+    x: 2.6526696442813778
+    y: -0.12247551941821744
+    yaw: 4.695
+
+  stage2_move_back:
+    x: 2.6704955184013617
+    y: -0.15041946071279797
+    yaw: 4.695
+  
+  stage2_return_point:
+    x: 2.60789051770523
+    y: 4.009030532771645
+    yaw: 4.695
+
+  # 第三關
+  stage3_entry:
+    x: 0.6245973535586964
+    y: -3.7774917229480574
+    yaw: 4.695
+
+  stage3_pick_pose:
+    x: 5.55437
+    y: 2.0
+    yaw: 3.1416
+
+  stage3_stack_pose:
+    x: 0.524321659455427
+    y: 3.567879879121584
+    yaw: 0.0
+
+  # 第三關蛇行掃描的 4 排（Stage3HayFSM 讀取）
+  #   stage3_row{i}_start : Nav2 導航目標 = 掃描起點，停在該排第一個格點前方，
+  #                         yaw 朝向掃描方向（第 2、4 排的起點在場地另一端）
+  #   stage3_row{i}_end   : 掃描終點 = 機器碰到該排最後一個格點稻草時的機器位置，
+  #                         只用來算方向與「到排尾了沒」，不會導航過去（yaw 不使用）
+  # ⚠ 目前全是 0 的佔位值，FSM 會拒絕執行（S3_FAILED），請用 named_pose_recorder 實測後填入。
+
+  stage3_row1_start:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+  stage3_row1_end:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+  stage3_row2_start:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+  stage3_row2_end:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+  stage3_row3_start:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+  stage3_row3_end:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+  stage3_row4_start:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+  stage3_row4_end:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+

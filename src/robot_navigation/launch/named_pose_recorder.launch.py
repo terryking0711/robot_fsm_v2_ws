@@ -1,36 +1,28 @@
-# ros2 launch robot_navigation named_pose_recorder.launch.py \
-#   named_poses_file:=/home/tdk/robot_fsm_v2_ws/src/robot_navigation/config/named_poses.yaml
+# ros2 launch robot_navigation named_pose_recorder.launch.py field_side:=mirror
+#   -> 寫入 /workspaces/field_config.yaml 中 sides.mirror.named_poses_file（src/ 底下）
+#   不給 field_side 時用 default_side；也可以直接指定 named_poses_file:=<path>
 #
 # 錄完新的點之後，讓 navigation_server 熱重載（不用重啟）：
 #   ros2 service call /reload_named_poses std_srvs/srv/Trigger
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+import yaml
+
+FIELD_CONFIG_FILE = '/workspaces/field_config.yaml'
 
 
-def generate_launch_description():
-    pkg_share = get_package_share_directory('robot_navigation')
+def recorder(context):
+    named_poses_file = LaunchConfiguration('named_poses_file').perform(context)
+    if not named_poses_file:
+        with open(FIELD_CONFIG_FILE) as f:
+            field_config = yaml.safe_load(f)
+        field_side = LaunchConfiguration('field_side').perform(context) or field_config['default_side']
+        named_poses_file = field_config['sides'][field_side]['named_poses_file']
 
-    default_named_poses_file = os.path.join(
-        pkg_share,
-        'config',
-        'named_poses.yaml'
-    )
-
-    named_poses_file = LaunchConfiguration('named_poses_file')
-
-    return LaunchDescription([
-        DeclareLaunchArgument(
-            'named_poses_file',
-            default_value=default_named_poses_file,
-            description='Path to named_poses.yaml to update'
-        ),
-
+    return [
         Node(
             package='robot_navigation',
             executable='named_pose_recorder',
@@ -56,4 +48,20 @@ def generate_launch_description():
                 ],
             }]
         )
+    ]
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument(
+            'field_side',
+            default_value='',
+            description='normal / mirror（空白 = field_config.yaml 的 default_side）'
+        ),
+        DeclareLaunchArgument(
+            'named_poses_file',
+            default_value='',
+            description='直接指定要寫入的 named_poses yaml（空白 = 依 field_side）'
+        ),
+        OpaqueFunction(function=recorder),
     ])
