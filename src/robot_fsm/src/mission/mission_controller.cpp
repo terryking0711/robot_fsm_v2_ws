@@ -112,6 +112,43 @@ bool MissionController::wait_start()
   return false;
 }
 
+bool MissionController::mech_init()
+{
+  switch (mech_init_phase_) {
+    case MechInitPhase::SEND_10001:
+      publish_mechanism_command(10001, "MECH_INIT", "mech_init_1");
+      mech_init_wait_start_ = ctx_->node->now();
+      mech_init_phase_ = MechInitPhase::WAIT;
+      return false;
+
+    case MechInitPhase::WAIT:
+      if ((ctx_->node->now() - mech_init_wait_start_).seconds() <
+        kMechInitWaitSec + kMechInitTempPauseSec)
+      {
+        return false;
+      }
+      mech_init_phase_ = MechInitPhase::SEND_20001;
+      return false;
+
+    case MechInitPhase::SEND_20001:
+      publish_mechanism_command(20001, "MECH_INIT", "mech_init_2");
+      mech_init_wait_start_ = ctx_->node->now();
+      mech_init_phase_ = MechInitPhase::WAIT_AFTER_20001;
+      return false;
+
+    case MechInitPhase::WAIT_AFTER_20001:
+      if ((ctx_->node->now() - mech_init_wait_start_).seconds() < kMechInitTempPauseSec) {
+        return false;
+      }
+      mech_init_phase_ = MechInitPhase::DONE;
+      return false;
+
+    case MechInitPhase::DONE:
+    default:
+      return true;
+  }
+}
+
 bool MissionController::leave_start_zone()
 {
   if (!run_arm_lift_sequence()) {
@@ -648,13 +685,25 @@ void MissionController::tick()
 
     case MissionState::WAIT_START:
       if (wait_start()) {
-        state_ = MissionState::LEAVE_START_ZONE;
+        state_ = MissionState::MECH_INIT;
+      }
+      break;
+
+    case MissionState::MECH_INIT:
+      if (mech_init()) {
+        // only_stage3：不離開出發區，直接從目前位置 Nav2 去 stage3_entry
+        state_ = ctx_->only_stage3
+          ? MissionState::TRANSITION_TO_STAGE3
+          : MissionState::LEAVE_START_ZONE;
       }
       break;
 
     case MissionState::LEAVE_START_ZONE:
       if (leave_start_zone()) {
-        state_ = MissionState::TRANSITION_TO_STAGE2;
+        // skip_stage2（DIT 自己場地測試）：整個第二關不跑，直接去 stage3_entry
+        state_ = ctx_->skip_stage2
+          ? MissionState::TRANSITION_TO_STAGE3
+          : MissionState::TRANSITION_TO_STAGE2;
       }
       break;
 

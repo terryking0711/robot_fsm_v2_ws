@@ -7,6 +7,7 @@ enum class MissionState
   SELF_CHECK,
   LOCALIZE,          // 開機定位：對出發點初始化，成功才准進 WAIT_START
   WAIT_START,
+  MECH_INIT,         // 離開出發區前的機構初始化：發 10001，等待後再發 20001
   LEAVE_START_ZONE,
 
   STAGE1_WETLAND,

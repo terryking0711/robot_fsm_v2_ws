@@ -10,6 +10,60 @@
 
 using namespace std::chrono_literals;
 
+namespace
+{
+
+// named pose 有兩種寫法：
+//   絕對：{x, y, yaw}（world frame）
+//   相對：{relative_to: <anchor>, dx, dy, dyaw}
+//         dx / dy = world frame 的 x / y 偏移（m，不隨 anchor 的 yaw 旋轉），dyaw = 相對 anchor 的 yaw（rad，可省略 = 0）
+// 兩種都寫時以 relative_to 為準。anchor 本身也可以是相對點，depth 限制擋循環引用。
+// ⚠ robot_fsm/src/stages/stage3_hay_fsm.cpp 有同樣的解析，改格式要兩邊一起改。
+bool resolve_named_pose(
+  const YAML::Node & poses, const std::string & name,
+  NamedPose2D & out, std::string & err, int depth = 0)
+{
+  if (depth > 8) {
+    err = "relative_to chain too deep (circular?) at '" + name + "'";
+    return false;
+  }
+
+  const YAML::Node p = poses[name];
+  if (!p || !p.IsMap()) {
+    err = "pose '" + name + "' not found";
+    return false;
+  }
+
+  if (p["relative_to"]) {
+    if (!p["dx"] || !p["dy"]) {
+      err = "relative pose '" + name + "' missing dx/dy";
+      return false;
+    }
+    NamedPose2D anchor;
+    if (!resolve_named_pose(poses, p["relative_to"].as<std::string>(), anchor, err, depth + 1)) {
+      return false;
+    }
+    const double dx = p["dx"].as<double>();
+    const double dy = p["dy"].as<double>();
+    const double dyaw = p["dyaw"] ? p["dyaw"].as<double>() : 0.0;
+    out.x = anchor.x + dx;
+    out.y = anchor.y + dy;
+    out.yaw = std::atan2(std::sin(anchor.yaw + dyaw), std::cos(anchor.yaw + dyaw));
+    return true;
+  }
+
+  if (!p["x"] || !p["y"] || !p["yaw"]) {
+    err = "pose '" + name + "' missing x/y/yaw";
+    return false;
+  }
+  out.x = p["x"].as<double>();
+  out.y = p["y"].as<double>();
+  out.yaw = p["yaw"].as<double>();
+  return true;
+}
+
+}  // namespace
+
 // ============================================================================
 // 對齊 tdk_slam_ws real-robot 的 Nav2 設定：
 //   * global_frame = "map"（Cartographer pure localization 提供 map->odom）
@@ -53,7 +107,7 @@ NavigationServer::NavigationServer()
       std::bind(&NavigationServer::handle_accepted, this, std::placeholders::_1)
     );
 
-  // 用 named_pose_recorder 更新 yaml 後，呼叫此 service 即可熱重載，
+  // 手動修改 yaml 後，呼叫此 service 即可熱重載，
   // 不需要重啟 navigation_server：
   //   ros2 service call /reload_named_poses std_srvs/srv/Trigger
   reload_srv_ =
@@ -92,26 +146,23 @@ bool NavigationServer::load_named_poses()
 
     for (auto it = poses.begin(); it != poses.end(); ++it) {
       std::string name = it->first.as<std::string>();
-      YAML::Node p = it->second;
-
-      if (!p["x"] || !p["y"] || !p["yaw"]) {
-        RCLCPP_WARN(
-          this->get_logger(),
-          "Pose [%s] missing x/y/yaw, skipped.", name.c_str());
-        continue;
-      }
 
       NamedPose2D pose;
-      pose.x = p["x"].as<double>();
-      pose.y = p["y"].as<double>();
-      pose.yaw = p["yaw"].as<double>();
+      std::string err;
+      if (!resolve_named_pose(poses, name, pose, err)) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "Pose [%s] skipped: %s", name.c_str(), err.c_str());
+        continue;
+      }
 
       new_poses[name] = pose;
 
       RCLCPP_INFO(
         this->get_logger(),
-        "Loaded pose [%s]: x=%.3f, y=%.3f, yaw=%.3f",
-        name.c_str(), pose.x, pose.y, pose.yaw);
+        "Loaded pose [%s]%s: x=%.3f, y=%.3f, yaw=%.3f",
+        name.c_str(), it->second["relative_to"] ? " (relative)" : "",
+        pose.x, pose.y, pose.yaw);
     }
   } catch (const std::exception & e) {
     // 檔案不存在或格式錯誤時不要讓整個節點 crash。

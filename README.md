@@ -14,7 +14,6 @@ graph TD
     subgraph FSM_WS [robot_fsm_v2_ws（本 repo）]
         Main["robot_fsm main<br>MissionController（10 Hz tick）"]
         NavSrv["navigation_server<br>action server: /navigate_to_named_pose<br>named_poses.yaml（world frame）"]
-        Recorder["named_pose_recorder<br>（現場記錄點位 → yaml，可熱重載）"]
         StmComm["stm_communication_node<br>/cmd_vel → /mecanum/cmd_vel<br>20Hz 轉發 + stale timeout 自動煞停"]
     end
 
@@ -109,8 +108,8 @@ stateDiagram-v2
 | 套件 | 內容 |
 |------|------|
 | `robot_fsm` | 主程式 `main.cpp`、`MissionController`、Stage1（濕地）/ Stage2（蛤蜊）/ Stage3（稻草）子 FSM、`stm_communication_node`、teleop / 測試 launch |
-| `robot_navigation` | `navigation_server`（named pose → Nav2 action 轉發、逾時管理、`/reload_named_poses` 熱重載）、`named_pose_recorder`、`named_poses.yaml` |
-| `robot_interfaces` | `NavigateToNamedPose.action`、`SaveNamedPose.srv`、`MechanismCommand/Feedback`、`VisionSceneState`、`StageResult` |
+| `robot_navigation` | `navigation_server`（named pose → Nav2 action 轉發、逾時管理、`/reload_named_poses` 熱重載）、`named_poses.yaml` |
+| `robot_interfaces` | `NavigateToNamedPose.action`、`MechanismCommand/Feedback`、`VisionSceneState`、`StageResult` |
 
 ## 座標系約定
 
@@ -158,7 +157,7 @@ ros2 topic pub --once /reset_cmd std_msgs/msg/UInt8 "{data: 2}"
 - ✅ **定位初始化整合**：`LOCALIZE` / `RELOCALIZE` 狀態透過 `/init_pose_cmd` ↔ `/init_pose_status` 與 `localization_manager` 串接
 - ✅ 場外重置流程（`/reset_cmd` → `RELOCALIZE` → 跳回該關）
 - ✅ `stm_communication_node`：`/cmd_vel` → `/mecanum/cmd_vel` 20Hz 轉發 + stale timeout 自動送零速
-- ✅ `named_pose_recorder` + `/reload_named_poses` 熱重載
+- ✅ `/reload_named_poses` 熱重載
 - ✅ 起點 → 第三關的展示流程可跑通
 
 ## 未完成 / 已知問題

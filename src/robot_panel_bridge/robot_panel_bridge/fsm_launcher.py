@@ -6,10 +6,11 @@ executable (started via `ros2 launch robot_fsm robot_bringup.launch.py`),
 not something already running that the panel could just publish to. This
 node bridges that gap: it stays up permanently and exposes one Trigger
 service per competition field side that does the actual `ros2 launch` on
-request (START NORMAL / START MIRROR buttons in the panel).
+request (START NORMAL / START MIRROR / START DIT buttons in the panel).
 
 The map itself is already loaded before this, by whichever desktop icon
-started the stack ("TDK Loc_Normal" / "TDK Loc_Mirror" -> start.sh <side>),
+started the stack ("TDK Loc_Normal" / "TDK Loc_Mirror" / "TDK Loc_DIT" ->
+start.sh <side>),
 which also passes that side in as the loaded_field_side parameter. A START
 for the other side is refused, since the FSM's named poses would not match
 the map cartographer/Nav2 are localizing on. Leave loaded_field_side empty
@@ -33,8 +34,10 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
-FIELD_SIDES = ('normal', 'mirror')
-START_SERVICE_PREFIX = '/fsm/start_'  # -> /fsm/start_normal, /fsm/start_mirror
+# dit = our own lab field (field_config.yaml sides.dit, skip_stage2 there).
+FIELD_SIDES = ('normal', 'mirror', 'dit')
+START_SERVICE_PREFIX = '/fsm/start_'  # -> /fsm/start_normal, /fsm/start_mirror, /fsm/start_dit
+LOC_DESKTOP_ICONS = {'normal': 'TDK Loc_Normal', 'mirror': 'TDK Loc_Mirror', 'dit': 'TDK Loc_DIT'}
 STOP_SERVICE = '/fsm/stop'
 
 # A CancelGoal request with a zero goal id and zero stamp cancels ALL goals.
@@ -83,7 +86,7 @@ class FsmLauncher(Node):
                 response.success = False
                 response.message = (
                     f'map loaded is {self._loaded_field_side.upper()}, not {field_side.upper()} -- '
-                    f'use the TDK Loc_{field_side.capitalize()} desktop icon first')
+                    f'use the {LOC_DESKTOP_ICONS[field_side]} desktop icon first')
                 self.get_logger().error(response.message)
                 return response
 

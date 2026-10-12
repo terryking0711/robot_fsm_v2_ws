@@ -35,6 +35,7 @@ private:
   bool init_system();
   bool self_check();
   bool wait_start();
+  bool mech_init();
   bool leave_start_zone();
   bool transition_to_named_pose(const std::string& target_name, float timeout_sec);
   bool finish_decision();
@@ -157,4 +158,19 @@ private:
   ArmLiftPhase arm_lift_phase_ = ArmLiftPhase::SEND_201;
   rclcpp::Time arm_lift_wait_start_;
   static constexpr double kArmLiftWaitSec = 2.0;
+
+  // ---- 離開出發區前的機構初始化（MECH_INIT）----
+  enum class MechInitPhase
+  {
+    SEND_10001,
+    WAIT,
+    SEND_20001,
+    WAIT_AFTER_20001,
+    DONE
+  };
+  MechInitPhase mech_init_phase_ = MechInitPhase::SEND_10001;
+  rclcpp::Time mech_init_wait_start_;
+  static constexpr double kMechInitWaitSec = 0.0;
+  // TEMP：10001 / 20001 之後各多停這麼久（測試用，不需要時改回 0.0）
+  static constexpr double kMechInitTempPauseSec = 3.0;
 };

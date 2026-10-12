@@ -204,6 +204,26 @@ int main(int argc, char** argv)
   ctx->stage2_push_clam_x_sign =
     load_fsm_side_double(ros_node, fsm_side_file, "stage2_push_clam_x_sign", 1.0);
 
+  // 略過第二關（field_config.yaml 該 side 的 skip_stage2，由 robot_bringup.launch.py 傳入）
+  ros_node->declare_parameter("skip_stage2", false);
+  ctx->skip_stage2 = ros_node->get_parameter("skip_stage2").as_bool();
+  if (ctx->skip_stage2) {
+    RCLCPP_WARN(
+      ros_node->get_logger(),
+      "[Main] skip_stage2=true -- STAGE2_CLAM skipped, "
+      "leave_start_zone -> stage3_entry -> STAGE3_HAY");
+  }
+
+  // 只跑第三關（robot_bringup.launch.py only_stage3:=true）
+  ros_node->declare_parameter("only_stage3", false);
+  ctx->only_stage3 = ros_node->get_parameter("only_stage3").as_bool();
+  if (ctx->only_stage3) {
+    RCLCPP_WARN(
+      ros_node->get_logger(),
+      "[Main] only_stage3=true -- LEAVE_START_ZONE / STAGE2_CLAM skipped, "
+      "mech_init -> stage3_entry -> STAGE3_HAY");
+  }
+
   if (ctx->enable_navigation) {
     RCLCPP_INFO(ros_node->get_logger(), "[Main] navigation ENABLED");
   } else {
@@ -291,6 +311,7 @@ int main(int argc, char** argv)
       rclcpp::SensorDataQoS(),
       [ctx](const robot_interfaces::msg::StrawPickStatus::SharedPtr msg) {
         std::scoped_lock lock(ctx->data_mutex);
+        // switch_pressed：true = 碰到稻草（STM 韌體端已改成按下 = true，這裡不再反轉）
         ctx->latest_straw_pick_status = *msg;
         ctx->latest_straw_pick_status_time = ctx->node->now();
       });

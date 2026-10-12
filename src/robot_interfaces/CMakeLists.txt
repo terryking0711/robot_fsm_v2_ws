@@ -18,7 +18,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/VisionSceneState.msg"
   "msg/StageResult.msg"
   "msg/StrawPickStatus.msg"
-  "srv/SaveNamedPose.srv"
   DEPENDENCIES action_msgs std_msgs geometry_msgs
 )
 

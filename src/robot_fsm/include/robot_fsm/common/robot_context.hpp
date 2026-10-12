@@ -45,6 +45,18 @@ struct RobotContext
   // 只在啟動時讀一次，執行中不會變動。
   bool enable_navigation = true;
 
+  // ---- 略過第二關 ----
+  // 由 main.cpp 從 ROS parameter "skip_stage2" 載入（field_config.yaml 該 side 的
+  // skip_stage2，DIT 自己場地測試用）。true 時 LEAVE_START_ZONE 之後直接
+  // TRANSITION_TO_STAGE3（導航到 stage3_entry），整個 STAGE2_CLAM 不跑。
+  bool skip_stage2 = false;
+
+  // ---- 只跑第三關 ----
+  // 由 main.cpp 從 ROS parameter "only_stage3" 載入（robot_bringup.launch.py only_stage3:=true）。
+  // true 時 MECH_INIT 之後不做 LEAVE_START_ZONE，直接 TRANSITION_TO_STAGE3
+  //（Nav2 到 stage3_entry）再跑 STAGE3_HAY。
+  bool only_stage3 = false;
+
   // Navigation
   NavigateClient::SharedPtr nav_client;
 

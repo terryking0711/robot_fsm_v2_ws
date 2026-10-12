@@ -8,6 +8,15 @@
 #       -> named_poses_file / fsm_side_file 都換成 mirror 的檔案
 #       不給 field_side 時用 field_config.yaml 的 default_side
 #
+#   略過第二關（STAGE2_CLAM），leave_start_zone 後直接去 stage3_entry：
+#     預設看 field_config.yaml 該 side 的 skip_stage2（dit = true），
+#     ros2 launch robot_fsm robot_bringup.launch.py field_side:=dit skip_stage2:=false
+#       -> 手動覆蓋
+#
+#   只跑第三關（MECH_INIT 之後不做 leave_start_zone、不跑第二關，
+#   直接從目前位置 Nav2 到 stage3_entry 再跑第三關）：
+#     ros2 launch robot_fsm robot_bringup.launch.py field_side:=dit only_stage3:=true
+#
 #   機構單獨測試模式（導航關閉）：
 #     ros2 launch robot_fsm robot_bringup.launch.py enable_navigation:=false
 #       -> 不啟動 navigation_server
@@ -49,6 +58,20 @@ def launch_side(context):
             f"{list(field_config['sides'])}")
     side = field_config['sides'][field_side]
 
+    # skip_stage2 launch arg 空白 -> 用 field_config.yaml 該 side 的設定
+    skip_stage2_arg = LaunchConfiguration('skip_stage2').perform(context).strip().lower()
+    if skip_stage2_arg == '':
+        skip_stage2 = bool(side.get('skip_stage2', False))
+    elif skip_stage2_arg in ('true', 'false'):
+        skip_stage2 = skip_stage2_arg == 'true'
+    else:
+        raise RuntimeError(f"skip_stage2 must be true / false, got '{skip_stage2_arg}'")
+
+    only_stage3_arg = LaunchConfiguration('only_stage3').perform(context).strip().lower()
+    if only_stage3_arg not in ('true', 'false'):
+        raise RuntimeError(f"only_stage3 must be true / false, got '{only_stage3_arg}'")
+    only_stage3 = only_stage3_arg == 'true'
+
     nav_pkg_share = get_package_share_directory('robot_navigation')
 
     # 導航啟用時才拉起 navigation_server
@@ -77,11 +100,14 @@ def launch_side(context):
             'field_side': field_side,
             'named_poses_file': side['named_poses_file'],
             'fsm_side_file': side['fsm_side_file'],
+            'skip_stage2': skip_stage2,
+            'only_stage3': only_stage3,
         }],
     )
 
     return [
-        LogInfo(msg=f'[bringup] field_side = {field_side}'),
+        LogInfo(msg=f'[bringup] field_side = {field_side}, skip_stage2 = {skip_stage2}, '
+                    f'only_stage3 = {only_stage3}'),
         navigation_server,
         fsm_main,
     ]
@@ -106,6 +132,17 @@ def generate_launch_description():
             'field_side',
             default_value='',
             description='normal / mirror（空白 = field_config.yaml 的 default_side）'
+        ),
+        DeclareLaunchArgument(
+            'skip_stage2',
+            default_value='',
+            description='true / false = 略過第二關直接去第三關（空白 = field_config.yaml 該 side 的 skip_stage2）'
+        ),
+        DeclareLaunchArgument(
+            'only_stage3',
+            default_value='false',
+            description='true = 只跑第三關：MECH_INIT 後直接 Nav2 到 stage3_entry 跑第三關'
+                        '（不做 leave_start_zone、不跑第二關）'
         ),
         DeclareLaunchArgument(
             'field_config_file',

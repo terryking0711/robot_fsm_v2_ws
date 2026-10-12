@@ -24,10 +24,6 @@ add_executable(navigation_server
   src/navigation_server.cpp
 )
 
-add_executable(named_pose_recorder
-  src/named_pose_recorder.cpp
-)
-
 ament_target_dependencies(navigation_server
   rclcpp
   rclcpp_action
@@ -40,26 +36,23 @@ ament_target_dependencies(navigation_server
   robot_interfaces
 )
 
-ament_target_dependencies(named_pose_recorder
-  rclcpp
-  geometry_msgs
-  tf2
-  tf2_ros
-  tf2_geometry_msgs
-  robot_interfaces
-)
-
 target_link_libraries(navigation_server
-  yaml-cpp
-)
-
-target_link_libraries(named_pose_recorder
   yaml-cpp
 )
 
 install(TARGETS
   navigation_server
-  named_pose_recorder
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# named_poses 可視化：live MarkerArray node + 離線出圖（plot_named_poses.py 不需要 ROS）
+install(PROGRAMS
+  scripts/named_poses_markers.py
+  scripts/plot_named_poses.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(FILES
+  scripts/named_poses_common.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

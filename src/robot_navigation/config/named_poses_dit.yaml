@@ -1,42 +1,30 @@
-# 【DIT 實驗室測試場地】field_config.yaml 的 sides.dit 使用這份檔案（從 named_poses_normal.yaml 複製）
-# ============================================================================
-# named poses（導航目標點）
-#
-# ⚠ 座標系已從 map frame 改為 world frame（場地最左下角為 (0,0)）。
-#    navigation_server 會把 goal 的 frame_id 設為 "world"，
-#    Nav2 planner_server 透過 world -> map 靜態 TF 自動轉換。
-#
-# 換算關係：world = map + (0.425, 1.0)，yaw 不變。
-# 以下數值是把原本 map frame 的佔位值直接加上偏移換算而來，
-# 實際比賽點位量測後再更新。
-# ============================================================================
 named_poses:
   # 場地定位點（robot_fsm_main 讀取，不是導航目標）
   #   start_pose        : 比賽出發點，FSM 開始時送給 localization_manager 初始化
   #   reset_pose_stageN : 場外重置後重新定位用的點
   # ⚠ reset_pose_stage1~4 目前是佔位值，量測後更新。
   start_pose:
-    x: 0.524321659455427
-    y: 3.567879879121584
+    x: 2.0693
+    y: 1.3334
     yaw: 0.0
 
   reset_pose_stage1:
-    x: 0.425
+    x: 5.425
     y: 1.0
     yaw: 0.0
 
   reset_pose_stage2:
-    x: 0.425
+    x: 5.425
     y: 1.0
     yaw: 0.0
 
   reset_pose_stage3:
-    x: 0.425
+    x: 5.425
     y: 1.0
     yaw: 0.0
 
   reset_pose_stage4:
-    x: 0.425
+    x: 5.425
     y: 1.0
     yaw: 0.0
 
@@ -46,97 +34,112 @@ named_poses:
   #   yaw: 0.0
   
   leave_start_zone:
-    x: 0.524321659455427
-    y: 3.567879879121584
+    x: 1.1051484634966293
+    y: 0.8809555772825549
     yaw: 0.0
 
   # 第一關
   stage1_entry:
-    x: 2.48007
+    x: 7.48007
     y: 4.06604
     yaw: 0.0
 
   # 第二關
   stage2_entry:
-    x: 0.701
+    x: 5.701
     y: 1.9766
     yaw: 3.1416
 
   stage2_push_clam_allign:
-    x: 0.7334
-    y: 1.82379
+    x: 5.85173524893755
+    y: 1.9124475904236093
     yaw: 3.1416
 
   stage2_move_forward_align:
-    x: 1.5328171396843675
-    y: 1.7916279234790295
+    x: 6.764056230648916
+    y: 1.90
     yaw: 3.1416
 
+  stage2_move_back:
+    x: 6.750236207566257
+    y: 1.9939921350045575
+    yaw: 3.1416
+  
   stage2_return_point:
-    x: 5.55437
+    x: 9.55437
     y: 3.0
     yaw: 3.1416
 
   # 第三關
-  stage3_entry:
-    x: 0.524321659455427
-    y: 3.567879879121584
-    yaw: 0.0
+  stage3_entry:  # 相對 stage3_row1_start，格式見下方「相對點位」說明
+    # 改相對前的絕對值：x: 0.9727, y: 1.477502194160363, yaw: 1.5476
+    relative_to: stage3_row1_start
+    dx: 0.0
+    dy: -0.7
+    dyaw: 0.0
 
-  stage3_pick_pose:
-    x: 5.55437
-    y: 2.0
-    yaw: 3.1416
+    # x: 1.1053827017769742
+    # y: 1.397456555953848
 
-  stage3_stack_pose:
-    x: 0.524321659455427
-    y: 3.567879879121584
-    yaw: 0.0
+  # 4 排都相對 stage3_row1_start（理想格點，跟 normal / mirror 同寫法），stage3_row4_end 例外是獨立絕對點：
+  #   掃描方向 +y、排長 2.26 m，各排往 -x 間隔 0.4 m。重量 row1_start 時整組會一起平移，但 row4_end 不會跟著動。
+  # 改相對前的實測值（x, y, yaw）：
+  #   row1 start (0.9727, 2.1902, 1.5623)   end (0.9727, 4.4746, 1.5879)
+  #   row2 start (0.5393, 2.2121, 1.5586)   end (0.5393, 4.4574, 1.5929)
+  #   row3 start (0.1304, 2.2153, 1.5518)   end (0.1304, 4.4470, 1.5972)
+  #   row4 start (-0.2613, 2.1902, 1.5631)  end (-0.2613, 4.4866, 1.5746)
 
-  # 第三關蛇行掃描的 4 排（Stage3HayFSM 讀取）
-  #   stage3_row{i}_start : Nav2 導航目標 = 掃描起點，停在該排第一個格點前方，
-  #                         yaw 朝向掃描方向（第 2、4 排的起點在場地另一端）
-  #   stage3_row{i}_end   : 掃描終點 = 機器碰到該排最後一個格點稻草時的機器位置，
-  #                         只用來算方向與「到排尾了沒」，不會導航過去（yaw 不使用）
-  # ⚠ 目前全是 0 的佔位值，FSM 會拒絕執行（S3_FAILED），請用 named_pose_recorder 實測後填入。
-
+  # row1
   stage3_row1_start:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
-
+    x: 1.0550187186952673
+    y: 2.179703356968716
+    yaw: 1.5623
   stage3_row1_end:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
+    relative_to: stage3_row1_start
+    dx: 0.0
+    dy: 2.26
+    dyaw: 0.0
 
+  # row2
   stage3_row2_start:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
-
+    relative_to: stage3_row1_start
+    dx: -0.4
+    dy: 0.0
+    dyaw: 0.0
   stage3_row2_end:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
+    relative_to: stage3_row1_start
+    dx: -0.4
+    dy: 2.26
+    dyaw: 0.0
 
+  # row3
   stage3_row3_start:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
-
+    relative_to: stage3_row1_start
+    dx: -0.8
+    dy: 0.0
+    dyaw: 0.0
   stage3_row3_end:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
+    relative_to: stage3_row1_start
+    dx: -0.8
+    dy: 2.26
+    dyaw: 0.0
 
+  # row4
   stage3_row4_start:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
+    relative_to: stage3_row1_start
+    dx: -1.2
+    dy: 0.0
+    dyaw: 0.0
+  stage3_row4_end:  # 獨立絕對點（不相對 row1_start），排尾，yaw = 掃描方向；放置前的旋轉看 stage3_place_rotate
+    x: -0.22742059486199812
+    y: 4.28661786090893
+    yaw: 1.5623
 
-  stage3_row4_end:
-    x: 0.0
-    y: 0.0
-    yaw: 0.0
+  # 放置前原地旋轉（Stage3HayFSM 讀取）：到 stage3_row4_end 後原地轉 dyaw 再放置。
+  #   dyaw > 0 = 逆時針（往左轉）、dyaw < 0 = 順時針（往右轉），從上往下看。dx / dy 固定 0。
+  stage3_place_rotate:
+    relative_to: stage3_row4_end
+    dx: 0.0
+    dy: 0.04
+    dyaw: 3.1416   # 逆時針 180°
 

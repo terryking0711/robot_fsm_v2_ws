@@ -65,7 +65,7 @@ public:
     status_sub_ = create_subscription<robot_interfaces::msg::StrawPickStatus>(
       "/mechanism/straw_pick_status", rclcpp::SensorDataQoS(),
       [this](const robot_interfaces::msg::StrawPickStatus::SharedPtr msg) {
-        switch_pressed_ = msg->switch_pressed;
+        switch_pressed_ = msg->switch_pressed;  // true = 按下（STM 韌體已改正，不再反轉）
       });
 
     start_time_ = now();
