@@ -34,9 +34,7 @@ MissionController::MissionController(std::shared_ptr<RobotContext> ctx)
   loc_wait_ticks_(0),
   loc_verify_ticks_(0),
   loc_retry_count_(0),
-  loc_target_(),
-  reset_resume_state_(MissionState::SAFE_STOP),
-  reset_pose_key_("")
+  loc_target_()
 {
   stage1_fsm_ = std::make_shared<Stage1WetlandFSM>(ctx_);
   stage2_fsm_ = std::make_shared<Stage2ClamFSM>(ctx_);
@@ -90,10 +88,12 @@ bool MissionController::self_check()
     return false;
   }
 
-  if (ctx_->field_poses.find("start") == ctx_->field_poses.end()) {
+  if (ctx_->reset_stage3 &&
+    ctx_->field_poses.find("reset_stage3") == ctx_->field_poses.end())
+  {
     RCLCPP_ERROR(
       ctx_->node->get_logger(),
-      "[Mission] field_poses missing 'start', check main.cpp parameters");
+      "[Mission] field_poses missing 'reset_stage3', check named_poses yaml");
     return false;
   }
 
@@ -112,49 +112,24 @@ bool MissionController::wait_start()
   return false;
 }
 
-bool MissionController::mech_init()
+bool MissionController::prepare_stage2()
 {
-  switch (mech_init_phase_) {
-    case MechInitPhase::SEND_10001:
-      publish_mechanism_command(10001, "MECH_INIT", "mech_init_1");
-      mech_init_wait_start_ = ctx_->node->now();
-      mech_init_phase_ = MechInitPhase::WAIT;
-      return false;
-
-    case MechInitPhase::WAIT:
-      if ((ctx_->node->now() - mech_init_wait_start_).seconds() <
-        kMechInitWaitSec + kMechInitTempPauseSec)
-      {
-        return false;
-      }
-      mech_init_phase_ = MechInitPhase::SEND_20001;
-      return false;
-
-    case MechInitPhase::SEND_20001:
-      publish_mechanism_command(20001, "MECH_INIT", "mech_init_2");
-      mech_init_wait_start_ = ctx_->node->now();
-      mech_init_phase_ = MechInitPhase::WAIT_AFTER_20001;
-      return false;
-
-    case MechInitPhase::WAIT_AFTER_20001:
-      if ((ctx_->node->now() - mech_init_wait_start_).seconds() < kMechInitTempPauseSec) {
-        return false;
-      }
-      mech_init_phase_ = MechInitPhase::DONE;
-      return false;
-
-    case MechInitPhase::DONE:
-    default:
-      return true;
+  static constexpr uint16_t commands[] = {2101, 2000, 2001};
+  static constexpr const char* states[] = {"S2_ENTER", "S2_EXTEND_ARM_1", "S2_LOCKER_DOWN"};
+  static constexpr const char* actions[] = {"initialize_stage2", "extend_arm", "lock_locker"};
+  if (!stage2_prepare_sent_) {
+    publish_mechanism_command(commands[stage2_prepare_step_],
+      states[stage2_prepare_step_], actions[stage2_prepare_step_]);
+    stage2_prepare_time_ = ctx_->node->now();
+    stage2_prepare_sent_ = true;
   }
-}
-
-bool MissionController::leave_start_zone()
-{
-  if (!run_arm_lift_sequence()) {
+  // 2000 伸臂完成後再送 2001，避免 STM 尚在執行而漏接。
+  const double wait_sec = stage2_prepare_step_ == 1 ? 4.0 : 1.0;
+  if ((ctx_->node->now() - stage2_prepare_time_).seconds() < wait_sec) {
     return false;
   }
-  return transition_to_named_pose("leave_start_zone", 20.0);
+  stage2_prepare_sent_ = false;
+  return ++stage2_prepare_step_ >= (ctx_->skip_stage2_arm ? 1 : 3);
 }
 
 void MissionController::publish_mechanism_command(
@@ -178,58 +153,6 @@ void MissionController::publish_mechanism_command(
     msg.command_name.c_str(),
     msg.arg_json.c_str());
 }
-
-bool MissionController::run_arm_lift_sequence()
-{
-  switch (arm_lift_phase_) {
-    case ArmLiftPhase::SEND_201:
-      // publish_mechanism_command(201, "S2_LIFT_ARM", "lift_arm");
-      arm_lift_wait_start_ = ctx_->node->now();
-      arm_lift_phase_ = ArmLiftPhase::DONE;
-      return false;
-
-    // case ArmLiftPhase::WAIT_1:
-    //   if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
-    //     return false;
-    //   }
-    //   arm_lift_phase_ = ArmLiftPhase::SEND_2000;
-    //   return false;
-
-    // case ArmLiftPhase::SEND_2000:
-    //   publish_mechanism_command(2000, "S2_LIFT_ARM", "lift_arm");
-    //   arm_lift_wait_start_ = ctx_->node->now();
-    //   arm_lift_phase_ = ArmLiftPhase::WAIT_2;
-    //   return false;
-
-    // case ArmLiftPhase::WAIT_2:
-    //   if ((ctx_->node->now() - arm_lift_wait_start_).seconds() < kArmLiftWaitSec) {
-    //     return false;
-    //   }
-    //   arm_lift_phase_ = ArmLiftPhase::SEND_202;
-    //   return false;
-
-    // case ArmLiftPhase::SEND_202:
-    //   publish_mechanism_command(202, "S2_LIFT_ARM", "lift_arm");
-    //   arm_lift_phase_ = ArmLiftPhase::DONE;
-    //   return false;
-
-    case ArmLiftPhase::DONE:
-    default:
-      return true;
-  }
-}
-
-// ============================================================================
-// Localization：tick-based，非阻塞
-//
-// 設計原則：對 cartographer 而言「重新初始化」= /finish_trajectory +
-// /start_trajectory，是破壞性操作 —— 已經收斂的估計會被丟掉，換成 YAML 裡
-// 寫死的名目 pose，還要重新累積 submap 才會穩。所以本檔的策略是：
-//   1. 已經定位好就完全不動它（health check → 直接 SUCCESS）
-//   2. 真的要重置時，先停穩再送指令（新 trajectory 的 extrapolator 最脆弱，
-//      而且可以閃掉 STM32 動態下的 NaN odom）
-//   3. manager 回報 ok 之後還要自己驗一次收斂，才算數
-// ============================================================================
 
 bool MissionController::is_localization_healthy(
   const Pose2D& expect_world,
@@ -351,107 +274,109 @@ LocalizeResult MissionController::handle_localize_retry(const char* reason)
   return LocalizeResult::RUNNING;
 }
 
-LocalizeResult MissionController::localize_at(const Pose2D& target_world, bool force)
+LocalizeResult MissionController::localize_at(const Pose2D& target_world)
 {
-  (void)target_world;
-  (void)force;
-
-  // 不再做開機定位或場外重定位，也不再送 /init_pose_cmd。
-  // 直接放行，讓 cartographer 維持目前已經收斂的 trajectory。
-  return LocalizeResult::SUCCESS;
-}
-
-// ============================================================================
-// 場外重置
-// ============================================================================
-
-bool MissionController::is_resettable_state(MissionState s) const
-{
-  switch (s) {
-    case MissionState::LEAVE_START_ZONE:
-    case MissionState::STAGE1_WETLAND:
-    case MissionState::TRANSITION_TO_STAGE2:
-    case MissionState::STAGE2_CLAM:
-    case MissionState::TRANSITION_TO_STAGE3:
-    case MissionState::STAGE3_HAY:
-    case MissionState::RELOCALIZE:   // 重置中再重置：允許，取新的重置點
-      return true;
-    default:
-      return false;
-  }
-}
-
-void MissionController::reset_nav_bookkeeping()
-{
-  nav_goal_sent_ = false;
-  nav_done_ = false;
-  nav_success_ = false;
-  nav_message_.clear();
-  nav_active_target_.clear();
-  nav_retry_count_ = 0;
-  nav_backoff_ticks_ = 0;
-}
-
-void MissionController::handle_reset_request()
-{
-  const uint8_t stage = *ctx_->pending_reset_stage;
-  ctx_->pending_reset_stage.reset();
-
-  std::string pose_key;
-  MissionState resume;
-
-  switch (stage) {
-    case 1:
-      pose_key = "reset_stage1";
-      resume = MissionState::STAGE1_WETLAND;
-      stage1_fsm_ = std::make_shared<Stage1WetlandFSM>(ctx_);  // 該關 FSM 重來
-      break;
-    case 2:
-      pose_key = "reset_stage2";
-      resume = MissionState::STAGE2_CLAM;
-      stage2_fsm_ = std::make_shared<Stage2ClamFSM>(ctx_);
-      break;
-    case 3:
-      pose_key = "reset_stage3";
-      resume = MissionState::STAGE3_HAY;
-      stage3_fsm_ = std::make_shared<Stage3HayFSM>(ctx_);
-      break;
-    case 4:
-      // TODO: mission 目前只跑到第三關（STAGE3_HAY），
-      // 第四關加入 MissionState 後再補上 resume state 與 stage4 FSM 重建。
-      RCLCPP_ERROR(
-        ctx_->node->get_logger(),
-        "[Mission][Reset] stage 4 not yet wired into mission flow, ignore");
-      return;
-    default:
-      RCLCPP_ERROR(
-        ctx_->node->get_logger(),
-        "[Mission][Reset] invalid reset stage %u (expect 1~4), ignore", stage);
-      return;
-  }
-
-  if (ctx_->field_poses.find(pose_key) == ctx_->field_poses.end()) {
-    RCLCPP_ERROR(
+  // ---- 導航總開關（RobotContext::enable_navigation）----
+  // 與導航共用同一個開關：false 時不對 localization_manager 送
+  // /init_pose_cmd，直接視為定位成功。
+  if (!ctx_->enable_navigation) {
+    RCLCPP_INFO(
       ctx_->node->get_logger(),
-      "[Mission][Reset] field_poses missing '%s', ignore reset", pose_key.c_str());
-    return;
+      "[Mission][Localize] navigation disabled, skip localization");
+    return LocalizeResult::SUCCESS;
   }
 
-  RCLCPP_WARN(
-    ctx_->node->get_logger(),
-    "[Mission][Reset] reset to stage %u requested, cancel nav and relocalize at '%s'",
-    stage, pose_key.c_str());
+  loc_target_ = target_world;
 
-  // 取消進行中的導航 goal，並清空導航/定位流程狀態
-  if (ctx_->nav_client) {
-    ctx_->nav_client->async_cancel_all_goals();
+  switch (loc_phase_) {
+
+    // ------------------------------------------------------------------
+    // 進入點：機器人被隊員搬到重置點，目前的估計必定是錯的，一定重建 trajectory
+    // ------------------------------------------------------------------
+    case LocPhase::IDLE: {
+      RCLCPP_WARN(
+        ctx_->node->get_logger(),
+        "[Mission][Localize] relocalize at [%.3f, %.3f, %.3f]",
+        target_world.x, target_world.y, target_world.yaw);
+      loc_phase_ = LocPhase::SETTLE;
+      loc_settle_ticks_ = 0;
+      return LocalizeResult::RUNNING;
+    }
+
+    // ------------------------------------------------------------------
+    // 停穩：新 trajectory 的 extrapolator 沒有歷史資料，動態下重置必爛。
+    // 順便閃掉 STM32 在運動時噴 NaN odom 的路徑。
+    // ------------------------------------------------------------------
+    case LocPhase::SETTLE: {
+      loc_settle_ticks_++;
+      if (loc_settle_ticks_ < kLocSettleTicks) {
+        return LocalizeResult::RUNNING;
+      }
+
+      send_init_pose_cmd(target_world);
+
+      loc_phase_ = LocPhase::WAIT_STATUS;
+      loc_wait_ticks_ = 0;
+      return LocalizeResult::RUNNING;
+    }
+
+    // ------------------------------------------------------------------
+    // 等 localization_manager 回報
+    // ------------------------------------------------------------------
+    case LocPhase::WAIT_STATUS: {
+      if (ctx_->init_status_received) {
+        const bool ok = ctx_->init_status_ok;
+        ctx_->init_status_received = false;
+
+        if (!ok) {
+          return handle_localize_retry("localization_manager reported failure, resend");
+        }
+
+        RCLCPP_INFO(
+          ctx_->node->get_logger(),
+          "[Mission][Localize] manager reported OK, waiting %.1f s to verify convergence",
+          kLocVerifyTicks / 10.0);
+
+        loc_phase_ = LocPhase::VERIFY;
+        loc_verify_ticks_ = 0;
+        return LocalizeResult::RUNNING;
+      }
+
+      // 保險 timeout：manager 最慢 5 秒一定回，超過視為掉包
+      loc_wait_ticks_++;
+      if (loc_wait_ticks_ > kLocTimeoutTicks) {
+        return handle_localize_retry("no status from localization_manager, resend");
+      }
+
+      return LocalizeResult::RUNNING;
+    }
+
+    // ------------------------------------------------------------------
+    // 驗收：manager 說 ok 不代表 pose graph 已經收斂。
+    // 等一段時間後自己查 TF，確認估計真的落在目標附近才放行。
+    // ------------------------------------------------------------------
+    case LocPhase::VERIFY: {
+      loc_verify_ticks_++;
+      if (loc_verify_ticks_ < kLocVerifyTicks) {
+        return LocalizeResult::RUNNING;
+      }
+
+      // 容差比 health check 寬：重置後 cartographer 會 scan match 到真實位置，
+      // 跟我們給的名目 pose 本來就會有落差。
+      if (is_localization_healthy(target_world, kLocVerifyTolXy, kLocVerifyTolYaw)) {
+        RCLCPP_INFO(
+          ctx_->node->get_logger(),
+          "[Mission][Localize] localization SUCCESS (converged)");
+        loc_phase_ = LocPhase::IDLE;
+        loc_retry_count_ = 0;
+        return LocalizeResult::SUCCESS;
+      }
+
+      return handle_localize_retry("pose did not converge after restart, resend");
+    }
   }
-  reset_nav_bookkeeping();
-  reset_localize_bookkeeping();
 
-  reset_pose_key_ = pose_key;
-  reset_resume_state_ = resume;
-  state_ = MissionState::RELOCALIZE;
+  return LocalizeResult::RUNNING;
 }
 
 // ============================================================================
@@ -628,19 +553,6 @@ bool MissionController::finish_decision()
 
 void MissionController::tick()
 {
-  // ---- 場外重置請求：優先權最高 ----
-  if (ctx_->pending_reset_stage.has_value()) {
-    if (is_resettable_state(state_)) {
-      handle_reset_request();
-    } else {
-      // 開機流程（BOOT~WAIT_START）或收尾流程收到重置：丟棄並警告
-      RCLCPP_WARN(
-        ctx_->node->get_logger(),
-        "[Mission][Reset] reset requested but current state not resettable, ignore");
-      ctx_->pending_reset_stage.reset();
-    }
-  }
-
   switch (state_) {
 
     case MissionState::BOOT:
@@ -659,51 +571,33 @@ void MissionController::tick()
     case MissionState::SELF_CHECK:
       if (self_check()) {
         reset_localize_bookkeeping();
-        state_ = MissionState::LOCALIZE;
+        // reset_stage3（panel RESET）：機器人已放在 reset_pose_stage3，
+        // 重建 cartographer trajectory 後直接去 stage3_entry，不等開始訊號
+        state_ = ctx_->reset_stage3 ? MissionState::RELOCALIZE : MissionState::LOCALIZE;
       } else {
         state_ = MissionState::SAFE_STOP;
       }
       break;
 
-    case MissionState::LOCALIZE: {
+    case MissionState::LOCALIZE:
       // 不做開機重定位，直接放行。
-      switch (localize_at(ctx_->field_poses.at("start"), /*force=*/false)) {
-        case LocalizeResult::SUCCESS:
-          RCLCPP_INFO(ctx_->node->get_logger(),
-            "[Mission] LOCALIZE skipped, keep existing cartographer trajectory");
-          state_ = MissionState::WAIT_START;
-          break;
-        case LocalizeResult::FAILURE:
-          state_ = MissionState::SAFE_STOP;
-          break;
-        case LocalizeResult::RUNNING:
-        default:
-          break;
-      }
+      RCLCPP_INFO(ctx_->node->get_logger(),
+        "[Mission] LOCALIZE skipped, keep existing cartographer trajectory");
+      state_ = MissionState::WAIT_START;
       break;
-    }
 
     case MissionState::WAIT_START:
       if (wait_start()) {
-        state_ = MissionState::MECH_INIT;
+        // only_stage3 / skip_stage2：開始後直接導航到第三關入口
+        state_ = (ctx_->only_stage3 || ctx_->skip_stage2)
+          ? MissionState::TRANSITION_TO_STAGE3
+          : MissionState::STAGE2_PREPARE;
       }
       break;
 
-    case MissionState::MECH_INIT:
-      if (mech_init()) {
-        // only_stage3：不離開出發區，直接從目前位置 Nav2 去 stage3_entry
-        state_ = ctx_->only_stage3
-          ? MissionState::TRANSITION_TO_STAGE3
-          : MissionState::LEAVE_START_ZONE;
-      }
-      break;
-
-    case MissionState::LEAVE_START_ZONE:
-      if (leave_start_zone()) {
-        // skip_stage2（DIT 自己場地測試）：整個第二關不跑，直接去 stage3_entry
-        state_ = ctx_->skip_stage2
-          ? MissionState::TRANSITION_TO_STAGE3
-          : MissionState::TRANSITION_TO_STAGE2;
+    case MissionState::STAGE2_PREPARE:
+      if (prepare_stage2()) {
+        state_ = MissionState::TRANSITION_TO_STAGE2;
       }
       break;
 
@@ -721,6 +615,12 @@ void MissionController::tick()
 
     case MissionState::STAGE2_CLAM:
       if (stage2_fsm_->tick()) {
+        state_ = MissionState::TRANSITION_TO_STAGE3_CORNER;
+      }
+      break;
+
+    case MissionState::TRANSITION_TO_STAGE3_CORNER:
+      if (transition_to_named_pose("stage2_to_stage3_corner", 50.0)) {
         state_ = MissionState::TRANSITION_TO_STAGE3;
       }
       break;
@@ -738,16 +638,20 @@ void MissionController::tick()
       break;
 
     case MissionState::RELOCALIZE: {
-      // 不再重建 trajectory；直接回到對應關卡。
-      switch (localize_at(ctx_->field_poses.at(reset_pose_key_), /*force=*/true)) {
+      // 第三關重置：在 reset_pose_stage3 重建 cartographer trajectory。
+      // 重試 kLocMaxRetries 次都失敗也照樣去 stage3_entry（比賽中不卡住）。
+      switch (localize_at(ctx_->field_poses.at("reset_stage3"))) {
         case LocalizeResult::SUCCESS:
           RCLCPP_INFO(
             ctx_->node->get_logger(),
-            "[Mission] RELOCALIZE skipped, resume stage");
-          state_ = reset_resume_state_;
+            "[Mission] RELOCALIZE done, go to stage3_entry");
+          state_ = MissionState::TRANSITION_TO_STAGE3;
           break;
         case LocalizeResult::FAILURE:
-          state_ = MissionState::SAFE_STOP;
+          RCLCPP_ERROR(
+            ctx_->node->get_logger(),
+            "[Mission] RELOCALIZE FAILED, go to stage3_entry anyway");
+          state_ = MissionState::TRANSITION_TO_STAGE3;
           break;
         case LocalizeResult::RUNNING:
         default:

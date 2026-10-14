@@ -1,145 +1,106 @@
 named_poses:
-  # 場地定位點（robot_fsm_main 讀取，不是導航目標）
-  #   start_pose        : 比賽出發點，FSM 開始時送給 localization_manager 初始化
-  #   reset_pose_stageN : 場外重置後重新定位用的點
-  # ⚠ reset_pose_stage1~4 目前是佔位值，量測後更新。
-  start_pose:
-    x: 2.0693
-    y: 1.3334
-    yaw: 0.0
-
-  reset_pose_stage1:
+  reset_pose_stage3: # 絕對
     x: 5.425
     y: 1.0
     yaw: 0.0
 
-  reset_pose_stage2:
-    x: 5.425
-    y: 1.0
-    yaw: 0.0
+  # ----
 
-  reset_pose_stage3:
-    x: 5.425
-    y: 1.0
-    yaw: 0.0
+  stage2_move_forward_align: # 絕對
+    x: 6.84
+    y: 2.825928797863046
+    yaw: 3.1416
+    precise: true
 
-  reset_pose_stage4:
-    x: 5.425
-    y: 1.0
-    yaw: 0.0
+  stage2_return_point: # 絕對
+    x: 7.798895024943465
+    y: 3.061225912802044
+    yaw: 3.1416
+  # ----
 
-  # leave_start_zone:
-  #   x: 0.48007
-  #   y: 3.06604
-  #   yaw: 0.0
-  
-  leave_start_zone:
-    x: 1.1051484634966293
-    y: 0.8809555772825549
-    yaw: 0.0
 
-  # 第一關
-  stage1_entry:
-    x: 7.48007
-    y: 4.06604
-    yaw: 0.0
 
   # 第二關
   stage2_entry:
-    x: 5.701
-    y: 1.9766
-    yaw: 3.1416
+    x: 5.93001965269284
+    y: 2.9709128458801056
+    yaw: -3.1415853071795867
+    precise: true
 
-  stage2_push_clam_allign:
-    x: 5.85173524893755
-    y: 1.9124475904236093
-    yaw: 3.1416
-
-  stage2_move_forward_align:
-    x: 6.764056230648916
-    y: 1.90
-    yaw: 3.1416
-
-  stage2_move_back:
-    x: 6.750236207566257
-    y: 1.9939921350045575
-    yaw: 3.1416
+  stage2_move_back: # 相對
+    # 改相對前的絕對值：x: 6.750236207566257, y: 1.9939921350045575, yaw: 3.1416
+    relative_to: stage2_move_forward_align
+    dx: -0.01382
+    dy: 0.093992
+    dyaw: 0.0
   
-  stage2_return_point:
-    x: 9.55437
-    y: 3.0
-    yaw: 3.1416
+
 
   # 第三關
-  stage3_entry:  # 相對 stage3_row1_start，格式見下方「相對點位」說明
-    # 改相對前的絕對值：x: 0.9727, y: 1.477502194160363, yaw: 1.5476
-    relative_to: stage3_row1_start
+  stage3_entry:  # 相對 stage3_row4_start（第三關從第四排外面衝進去）
+    relative_to: stage3_row4_start
     dx: 0.0
     dy: -0.7
     dyaw: 0.0
 
-    # x: 1.1053827017769742
-    # y: 1.397456555953848
-
-  # 4 排都相對 stage3_row1_start（理想格點，跟 normal / mirror 同寫法），stage3_row4_end 例外是獨立絕對點：
-  #   掃描方向 +y、排長 2.26 m，各排往 -x 間隔 0.4 m。重量 row1_start 時整組會一起平移，但 row4_end 不會跟著動。
-  # 改相對前的實測值（x, y, yaw）：
-  #   row1 start (0.9727, 2.1902, 1.5623)   end (0.9727, 4.4746, 1.5879)
-  #   row2 start (0.5393, 2.2121, 1.5586)   end (0.5393, 4.4574, 1.5929)
-  #   row3 start (0.1304, 2.2153, 1.5518)   end (0.1304, 4.4470, 1.5972)
-  #   row4 start (-0.2613, 2.1902, 1.5631)  end (-0.2613, 4.4866, 1.5746)
-
   # row1
-  stage3_row1_start:
-    x: 1.0550187186952673
-    y: 2.179703356968716
-    yaw: 1.5623
-  stage3_row1_end:
-    relative_to: stage3_row1_start
-    dx: 0.0
-    dy: 2.26
+  stage3_row1_start: # 相對
+    # 改相對前的絕對值：x: 1.0550187186952673, y: 2.179703356968716, yaw: 1.5623
+    relative_to: stage3_row4_start
+    dx: 1.2
+    dy: 0.0
+    dyaw: 0.0
+  stage3_row1_end: # 相對
+    relative_to: stage3_row4_start
+    dx: 1.2
+    dy: 1.95
     dyaw: 0.0
 
   # row2
-  stage3_row2_start:
-    relative_to: stage3_row1_start
-    dx: -0.4
+  stage3_row2_start: # 相對
+    relative_to: stage3_row4_start
+    dx: 0.8
     dy: 0.0
     dyaw: 0.0
-  stage3_row2_end:
-    relative_to: stage3_row1_start
-    dx: -0.4
-    dy: 2.26
+  stage3_row2_end: # 相對
+    relative_to: stage3_row4_start
+    dx: 0.8
+    dy: 1.95
     dyaw: 0.0
 
   # row3
-  stage3_row3_start:
-    relative_to: stage3_row1_start
-    dx: -0.8
+  stage3_row3_start: # 相對
+    relative_to: stage3_row4_start
+    dx: 0.4
     dy: 0.0
     dyaw: 0.0
-  stage3_row3_end:
-    relative_to: stage3_row1_start
-    dx: -0.8
-    dy: 2.26
+  stage3_row3_end: # 相對
+    relative_to: stage3_row4_start
+    dx: 0.4
+    dy: 1.95
     dyaw: 0.0
 
   # row4
-  stage3_row4_start:
-    relative_to: stage3_row1_start
-    dx: -1.2
+  stage3_row4_start: # 絕對（第三關所有點都相對這個點）
+    x: -0.15133147826470222
+    y: 2.1708418538001313
+    yaw: 1.5623
+  stage3_row4_end: # 相對
+    relative_to: stage3_row4_start
+    dx: 0.0
+    dy: 1.95
+    dyaw: 0.0      # 排尾
+
+  stage3_place: # 絕對
+    x: -0.22742
+    y: 4.376618
+    yaw: -1.579285
+    precise: true
+
+  # 第二關到第三關先橫走再直走：只相對返回點。
+  # dx = 設定時 stage3_entry.x - stage2_return_point.x（固定偏移，world frame）。
+  stage2_to_stage3_corner:
+    relative_to: stage2_return_point
+    dx: -7.950226503208167
     dy: 0.0
     dyaw: 0.0
-  stage3_row4_end:  # 獨立絕對點（不相對 row1_start），排尾，yaw = 掃描方向；放置前的旋轉看 stage3_place_rotate
-    x: -0.22742059486199812
-    y: 4.28661786090893
-    yaw: 1.5623
-
-  # 放置前原地旋轉（Stage3HayFSM 讀取）：到 stage3_row4_end 後原地轉 dyaw 再放置。
-  #   dyaw > 0 = 逆時針（往左轉）、dyaw < 0 = 順時針（往右轉），從上往下看。dx / dy 固定 0。
-  stage3_place_rotate:
-    relative_to: stage3_row4_end
-    dx: 0.0
-    dy: 0.04
-    dyaw: 3.1416   # 逆時針 180°
-

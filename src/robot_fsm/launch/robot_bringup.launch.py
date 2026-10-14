@@ -8,14 +8,23 @@
 #       -> named_poses_file / fsm_side_file 都換成 mirror 的檔案
 #       不給 field_side 時用 field_config.yaml 的 default_side
 #
-#   略過第二關（STAGE2_CLAM），leave_start_zone 後直接去 stage3_entry：
+#   略過第二關（STAGE2_CLAM），開始後直接去 stage3_entry：
 #     預設看 field_config.yaml 該 side 的 skip_stage2（dit = true），
 #     ros2 launch robot_fsm robot_bringup.launch.py field_side:=dit skip_stage2:=false
 #       -> 手動覆蓋
 #
-#   只跑第三關（MECH_INIT 之後不做 leave_start_zone、不跑第二關，
+#   第二關關閉手臂 state（2000/2001/203/204/205/206/111/2021/207 及其 mirror 代號都不送，
+#   連 state 都不進入；LIFT_ARM 後直接導航到 stage2_return_point 再收手臂）：
+#     ros2 launch robot_fsm robot_bringup.launch.py skip_stage2_arm:=true
+#
+#   只跑第三關（START 之後不跑第二關，
 #   直接從目前位置 Nav2 到 stage3_entry 再跑第三關）：
 #     ros2 launch robot_fsm robot_bringup.launch.py field_side:=dit only_stage3:=true
+#
+#   第三關重置（panel RESET 按鈕經 fsm_launcher /fsm/reset_stage3 呼叫，機器人已放在
+#   reset_pose_stage3）：在 reset_pose_stage3 重建 cartographer trajectory，
+#   不等開始訊號直接 Nav2 到 stage3_entry 跑第三關：
+#     ros2 launch robot_fsm robot_bringup.launch.py field_side:=normal reset_stage3:=true
 #
 #   機構單獨測試模式（導航關閉）：
 #     ros2 launch robot_fsm robot_bringup.launch.py enable_navigation:=false
@@ -67,10 +76,20 @@ def launch_side(context):
     else:
         raise RuntimeError(f"skip_stage2 must be true / false, got '{skip_stage2_arg}'")
 
+    skip_stage2_arm_arg = LaunchConfiguration('skip_stage2_arm').perform(context).strip().lower()
+    if skip_stage2_arm_arg not in ('true', 'false'):
+        raise RuntimeError(f"skip_stage2_arm must be true / false, got '{skip_stage2_arm_arg}'")
+    skip_stage2_arm = skip_stage2_arm_arg == 'true'
+
     only_stage3_arg = LaunchConfiguration('only_stage3').perform(context).strip().lower()
     if only_stage3_arg not in ('true', 'false'):
         raise RuntimeError(f"only_stage3 must be true / false, got '{only_stage3_arg}'")
     only_stage3 = only_stage3_arg == 'true'
+
+    reset_stage3_arg = LaunchConfiguration('reset_stage3').perform(context).strip().lower()
+    if reset_stage3_arg not in ('true', 'false'):
+        raise RuntimeError(f"reset_stage3 must be true / false, got '{reset_stage3_arg}'")
+    reset_stage3 = reset_stage3_arg == 'true'
 
     nav_pkg_share = get_package_share_directory('robot_navigation')
 
@@ -101,13 +120,15 @@ def launch_side(context):
             'named_poses_file': side['named_poses_file'],
             'fsm_side_file': side['fsm_side_file'],
             'skip_stage2': skip_stage2,
+            'skip_stage2_arm': skip_stage2_arm,
             'only_stage3': only_stage3,
+            'reset_stage3': reset_stage3,
         }],
     )
 
     return [
         LogInfo(msg=f'[bringup] field_side = {field_side}, skip_stage2 = {skip_stage2}, '
-                    f'only_stage3 = {only_stage3}'),
+                    f'only_stage3 = {only_stage3}, reset_stage3 = {reset_stage3}'),
         navigation_server,
         fsm_main,
     ]
@@ -139,10 +160,22 @@ def generate_launch_description():
             description='true / false = 略過第二關直接去第三關（空白 = field_config.yaml 該 side 的 skip_stage2）'
         ),
         DeclareLaunchArgument(
+            'skip_stage2_arm',
+            default_value='false',
+            description='true = 送2101後直接到stage2_entry，保留第二段伸臂、推動、抬臂；'
+                        '抬臂後直接到stage2_return_point收臂'
+        ),
+        DeclareLaunchArgument(
             'only_stage3',
             default_value='false',
-            description='true = 只跑第三關：MECH_INIT 後直接 Nav2 到 stage3_entry 跑第三關'
-                        '（不做 leave_start_zone、不跑第二關）'
+            description='true = 只跑第三關：START 後直接 Nav2 到 stage3_entry 跑第三關'
+                        '（不跑第二關）'
+        ),
+        DeclareLaunchArgument(
+            'reset_stage3',
+            default_value='false',
+            description='true = 第三關重置：在 reset_pose_stage3 重建 cartographer trajectory，'
+                        '不等開始訊號直接 Nav2 到 stage3_entry 跑第三關'
         ),
         DeclareLaunchArgument(
             'field_config_file',

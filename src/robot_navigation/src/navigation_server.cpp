@@ -6,12 +6,42 @@
 #include <yaml-cpp/yaml.h>
 
 #include <tf2/LinearMath/Quaternion.h>
+#include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 using namespace std::chrono_literals;
 
 namespace
 {
+
+// ---- fine_align（Nav2 到點後的精對位）----
+// 底盤是 Omni（麥輪）：x / y / yaw 三軸各自 P 控制，同時修。
+// 輸出發到 cmd_vel_nav（velocity_smoother 的輸入），/cmd_vel 仍只有 smoother 一個 producer，
+// 不必像 FSM 自己控速那樣先等 1.2 s 讓 smoother timeout。
+// 最低速度要高於 velocity_smoother 的 deadband_velocity [0.02, 0.02, 0.01]，否則會被吃成 0。
+constexpr char kFineCmdTopic[] = "/cmd_vel_nav";
+constexpr char kBaseFrame[] = "base_footprint";
+constexpr double kFineXyTol = 0.01;        // m
+constexpr double kFineYawTol = 0.015;      // rad（約 0.86°）
+constexpr double kFineKpXy = 1.2;          // (m/s) / m
+constexpr double kFineKpYaw = 1.5;         // (rad/s) / rad
+constexpr double kFineMaxV = 0.10;         // m/s
+constexpr double kFineMinV = 0.03;         // m/s
+constexpr double kFineMaxW = 0.30;         // rad/s
+constexpr double kFineMinW = 0.03;         // rad/s
+constexpr int kFineSettleCycles = 4;       // 連續幾個週期都在容許內才算到（20 Hz => 0.2 s）
+constexpr double kFineTfMaxAgeSec = 1.0;   // 過期定位停止精對位，保留 Nav2 結果
+constexpr double kFineTimeoutSec = 3.0;    // 超時就停車，仍回報成功（Nav2 本身已到點）
+
+// |err| <= tol 輸出 0；否則 kp*err，絕對值夾在 [min_v, max_v]。
+double fine_axis_cmd(double err, double tol, double kp, double min_v, double max_v)
+{
+  if (std::abs(err) <= tol) {
+    return 0.0;
+  }
+  const double v = std::clamp(std::abs(kp * err), min_v, max_v);
+  return std::copysign(v, err);
+}
 
 // named pose 有兩種寫法：
 //   絕對：{x, y, yaw}（world frame）
@@ -46,7 +76,14 @@ bool resolve_named_pose(
     const double dx = p["dx"].as<double>();
     const double dy = p["dy"].as<double>();
     const double dyaw = p["dyaw"] ? p["dyaw"].as<double>() : 0.0;
-    out.x = anchor.x + dx;
+    // x_relative_to 可讓轉角的 x 跟隨另一個點；y/yaw 仍使用 relative_to。
+    NamedPose2D x_anchor = anchor;
+    if (p["x_relative_to"] &&
+      !resolve_named_pose(poses, p["x_relative_to"].as<std::string>(), x_anchor, err, depth + 1))
+    {
+      return false;
+    }
+    out.x = x_anchor.x + dx;
     out.y = anchor.y + dy;
     out.yaw = std::atan2(std::sin(anchor.yaw + dyaw), std::cos(anchor.yaw + dyaw));
     return true;
@@ -119,6 +156,12 @@ NavigationServer::NavigationServer()
         std::placeholders::_1,
         std::placeholders::_2));
 
+  fine_cmd_pub_ =
+    this->create_publisher<geometry_msgs::msg::Twist>(kFineCmdTopic, 10);
+
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
   RCLCPP_INFO(this->get_logger(), "navigation_server started.");
   RCLCPP_INFO(this->get_logger(), "Nav2 action name: %s", nav2_action_name_.c_str());
   RCLCPP_INFO(this->get_logger(), "Global frame: %s", global_frame_.c_str());
@@ -156,12 +199,16 @@ bool NavigationServer::load_named_poses()
         continue;
       }
 
+      // precise 只看這個點自己，不從 relative_to 的 anchor 繼承。
+      pose.precise = it->second["precise"] && it->second["precise"].as<bool>();
+
       new_poses[name] = pose;
 
       RCLCPP_INFO(
         this->get_logger(),
-        "Loaded pose [%s]%s: x=%.3f, y=%.3f, yaw=%.3f",
+        "Loaded pose [%s]%s%s: x=%.3f, y=%.3f, yaw=%.3f",
         name.c_str(), it->second["relative_to"] ? " (relative)" : "",
+        pose.precise ? " (precise)" : "",
         pose.x, pose.y, pose.yaw);
     }
   } catch (const std::exception & e) {
@@ -411,8 +458,33 @@ void NavigationServer::execute(
   auto nav_result = nav_result_future.get();
 
   if (nav_result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+    bool fine_converged = true;
+    if (named_pose->precise) {
+      const bool converged = fine_align(goal_handle, *named_pose);
+      fine_converged = converged;
+
+      if (goal_handle->is_canceling()) {
+        result->success = false;
+        result->message = "NavigateToNamedPose canceled during fine_align.";
+        goal_handle->canceled(result);
+
+        RCLCPP_WARN(this->get_logger(), "%s", result->message.c_str());
+        return;
+      }
+
+      if (!converged) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "fine_align did not converge for '%s', keep Nav2 result.",
+          goal->target_name.c_str());
+      }
+    }
+
     result->success = true;
     result->message = "Navigation succeeded: " + goal->target_name;
+    if (named_pose->precise && !fine_converged) {
+      result->message += " (Nav2 succeeded; fine_align not converged)";
+    }
     goal_handle->succeed(result);
 
     RCLCPP_INFO(this->get_logger(), "%s", result->message.c_str());
@@ -429,4 +501,98 @@ void NavigationServer::execute(
 
     RCLCPP_ERROR(this->get_logger(), "%s", result->message.c_str());
   }
+}
+
+bool NavigationServer::fine_align(
+  const std::shared_ptr<NavigateToNamedPoseGoalHandle> goal_handle,
+  const NamedPose2D & target)
+{
+  auto feedback = std::make_shared<NavigateToNamedPose::Feedback>();
+  feedback->progress = 0.99;
+
+  const auto start_time = this->now();
+  int settled = 0;
+  bool converged = false;
+  double ex = 0.0, ey = 0.0, eyaw = 0.0;
+  bool have_error = false;
+  const char* stop_reason = "shutdown_or_cancel";
+
+  rclcpp::Rate rate(20.0);
+  while (rclcpp::ok() && !goal_handle->is_canceling()) {
+    if ((this->now() - start_time).seconds() > kFineTimeoutSec) {
+      stop_reason = "timeout";
+      break;
+    }
+
+    geometry_msgs::msg::TransformStamped tf;
+    try {
+      tf = tf_buffer_->lookupTransform(global_frame_, kBaseFrame, tf2::TimePointZero);
+    } catch (const tf2::TransformException & e) {
+      RCLCPP_WARN(this->get_logger(), "fine_align TF lookup failed: %s", e.what());
+      stop_reason = "tf_unavailable";
+      break;
+    }
+
+    const double tf_age = (this->now() - rclcpp::Time(tf.header.stamp)).seconds();
+    if (tf_age > kFineTfMaxAgeSec) {
+      stop_reason = "tf_stale";
+      RCLCPP_WARN(this->get_logger(), "fine_align TF stale: %.3f s", tf_age);
+      break;
+    }
+    const double yaw = tf2::getYaw(tf.transform.rotation);
+    ex = target.x - tf.transform.translation.x;
+    ey = target.y - tf.transform.translation.y;
+    eyaw = std::atan2(std::sin(target.yaw - yaw), std::cos(target.yaw - yaw));
+
+    if (!std::isfinite(ex) || !std::isfinite(ey) || !std::isfinite(eyaw)) {
+      stop_reason = "invalid_pose";
+      break;
+    }
+    if (!have_error) {
+      RCLCPP_INFO(this->get_logger(),
+        "fine_align initial error: ex=%.4f ey=%.4f eyaw=%.4f", ex, ey, eyaw);
+      have_error = true;
+    }
+
+    if (std::hypot(ex, ey) <= kFineXyTol && std::abs(eyaw) <= kFineYawTol) {
+      fine_cmd_pub_->publish(geometry_msgs::msg::Twist());
+      if (++settled >= kFineSettleCycles) {
+        converged = true;
+        stop_reason = "converged";
+        break;
+      }
+      rate.sleep();
+      continue;
+    } else {
+      settled = 0;
+    }
+
+    // world 誤差轉到車體座標
+    const double bx = std::cos(yaw) * ex + std::sin(yaw) * ey;
+    const double by = -std::sin(yaw) * ex + std::cos(yaw) * ey;
+
+    geometry_msgs::msg::Twist cmd;
+    cmd.linear.x = fine_axis_cmd(bx, kFineXyTol, kFineKpXy, kFineMinV, kFineMaxV);
+    cmd.linear.y = fine_axis_cmd(by, kFineXyTol, kFineKpXy, kFineMinV, kFineMaxV);
+    cmd.angular.z = fine_axis_cmd(eyaw, kFineYawTol, kFineKpYaw, kFineMinW, kFineMaxW);
+    fine_cmd_pub_->publish(cmd);
+
+    feedback->current_state =
+      "fine_align ex=" + std::to_string(ex) + " ey=" + std::to_string(ey) +
+      " eyaw=" + std::to_string(eyaw);
+    goal_handle->publish_feedback(feedback);
+
+    rate.sleep();
+  }
+
+  fine_cmd_pub_->publish(geometry_msgs::msg::Twist());
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "fine_align %s in %.2f s: ex=%.4f ey=%.4f eyaw=%.4f reason=%s settled=%d/%d error_valid=%s",
+    converged ? "converged" : "stopped",
+    (this->now() - start_time).seconds(), ex, ey, eyaw,
+    stop_reason, settled, kFineSettleCycles, have_error ? "true" : "false");
+
+  return converged;
 }

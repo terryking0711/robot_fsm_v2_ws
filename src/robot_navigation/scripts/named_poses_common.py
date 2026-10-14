@@ -75,6 +75,8 @@ def _resolve(poses, name, depth=0):
         if 'dx' not in p or 'dy' not in p:
             raise ValueError(f"relative pose '{name}' missing dx/dy")
         ax, ay, ayaw = _resolve(poses, p['relative_to'], depth + 1)
+        if 'x_relative_to' in p:
+            ax = _resolve(poses, p['x_relative_to'], depth + 1)[0]
         dx, dy = float(p['dx']), float(p['dy'])
         dyaw = float(p.get('dyaw', 0.0))
         yaw = math.atan2(math.sin(ayaw + dyaw), math.cos(ayaw + dyaw))

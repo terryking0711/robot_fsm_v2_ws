@@ -47,15 +47,28 @@ struct RobotContext
 
   // ---- 略過第二關 ----
   // 由 main.cpp 從 ROS parameter "skip_stage2" 載入（field_config.yaml 該 side 的
-  // skip_stage2，DIT 自己場地測試用）。true 時 LEAVE_START_ZONE 之後直接
+  // skip_stage2，DIT 自己場地測試用）。true 時 WAIT_START 之後直接
   // TRANSITION_TO_STAGE3（導航到 stage3_entry），整個 STAGE2_CLAM 不跑。
   bool skip_stage2 = false;
 
+  // ---- 第二關關閉手臂 state ----
+  // 由 main.cpp 從 ROS parameter "skip_stage2_arm" 載入（robot_bringup.launch.py skip_stage2_arm:=true）。
+  // true 時先送 2101 等 1 秒，導航到共用 stage2_entry，再跑 EXTEND_ARM_2 -> PUSH_CLAM -> LIFT_ARM ->
+  // MOVE_TO_RETURN（導航到 stage2_return_point）-> RETRACT_ARM_1 -> RETRACT_ARM_2 -> DONE。
+  bool skip_stage2_arm = false;
+
   // ---- 只跑第三關 ----
   // 由 main.cpp 從 ROS parameter "only_stage3" 載入（robot_bringup.launch.py only_stage3:=true）。
-  // true 時 MECH_INIT 之後不做 LEAVE_START_ZONE，直接 TRANSITION_TO_STAGE3
+  // true 時 WAIT_START 之後直接 TRANSITION_TO_STAGE3
   //（Nav2 到 stage3_entry）再跑 STAGE3_HAY。
   bool only_stage3 = false;
+
+  // ---- 第三關重置 ----
+  // 由 main.cpp 從 ROS parameter "reset_stage3" 載入（panel RESET -> fsm_launcher
+  // /fsm/reset_stage3 先停掉舊的 robot_fsm_main，再以 reset_stage3:=true 重新 launch）。
+  // true 時 SELF_CHECK 之後走 RELOCALIZE：在 reset_pose_stage3 重建 cartographer trajectory，
+  // 不等開始訊號直接 TRANSITION_TO_STAGE3（Nav2 到 stage3_entry）再跑 STAGE3_HAY。
+  bool reset_stage3 = false;
 
   // Navigation
   NavigateClient::SharedPtr nav_client;
@@ -83,12 +96,8 @@ struct RobotContext
   bool init_status_received = false;  // 本輪是否已收到回報
   bool init_status_ok = false;        // 回報結果
 
-  // 場外重置請求（/reset_cmd, std_msgs/UInt8, data = 1~4 對應第幾關的重置點）
-  std::optional<uint8_t> pending_reset_stage;
-
   // 場地上的定位點（world frame）：
-  //   "start"        比賽出發點（= map 原點）
-  //   "reset_stage1" ~ "reset_stage4" 各關重置點
+  //   "reset_stage3" 第三關重置點
   // 由 main.cpp 從 ROS parameters 載入，可用 launch/yaml 覆蓋不需重編。
   std::map<std::string, Pose2D> field_poses;
 

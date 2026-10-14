@@ -4,7 +4,7 @@
 
 Stage2ClamFSM::Stage2ClamFSM(std::shared_ptr<RobotContext> ctx)
 : ctx_(ctx),
-  state_(Stage2State::S2_ENTER),
+  state_(Stage2State::S2_EXTEND_ARM_2),
   tick_count_(0),
   state_command_sent_(false),
   state_enter_time_(ctx_->node->now()),
@@ -32,6 +32,24 @@ bool Stage2ClamFSM::wait_ticks(int required_ticks)
 
 void Stage2ClamFSM::enter_state(Stage2State next_state)
 {
+  // skip_stage2_arm：手臂 state 連進都不進，直接換成它原本的下一個 state
+  while (ctx_->skip_stage2_arm) {
+    Stage2State skip_to;
+    switch (next_state) {
+      case Stage2State::S2_MOVE_FORWARD_ALIGN: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
+      case Stage2State::S2_ALLIGN_LOCK: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
+      case Stage2State::S2_LOCK_BOX: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
+      case Stage2State::S2_ROTATE_BOX_1: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
+      case Stage2State::S2_PRE_DROP_BOX: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
+      case Stage2State::S2_MOVE_BACK: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
+      default: skip_to = next_state; break;
+    }
+    if (skip_to == next_state) {
+      break;
+    }
+    next_state = skip_to;
+  }
+
   state_ = next_state;
   tick_count_ = 0;
   state_command_sent_ = false;
@@ -274,46 +292,10 @@ bool Stage2ClamFSM::tick()
 {
   switch (state_) {
 
-    case Stage2State::S2_ENTER:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ENTER 第二關");
-      publish_state_command(2000, "S2_ENTER", "initialize_stage2");
-      if (wait_ticks(50)) {
-        enter_state(Stage2State::S2_EXTEND_ARM_1);
-      }
-      return false;
-
-    // 201 -> 伸出第一段手臂
-    case Stage2State::S2_EXTEND_ARM_1:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] EXTEND_ARM_1 伸出手臂");
-      publish_state_command(2101, "S2_EXTEND_ARM_1", "extend_arm");
-      if (wait_ticks(40)) {
-        enter_state(Stage2State::S2_LOCKER_DOWN);
-      }
-      return false;
-
-    // 2001 -> locker 往下轉
-    // 鏡像場地的代號不同：改 robot_fsm/config/fsm_side_mirror.yaml 的 command_id_remap
-    case Stage2State::S2_LOCKER_DOWN:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCKER_DOWN 鎖定箱子");
-      publish_state_command(2001, "S2_LOCKER_DOWN", "lock_locker");
-      if (wait_ticks(50)) enter_state(Stage2State::S2_ALLIGN);
-      return false;
-
-
-    case Stage2State::S2_ALLIGN: {
-      if (!navigate_to_named_pose("stage2_push_clam_allign", 15.0f)) {
-        return false;
-      }
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ALLIGN 導航對齊完成");
-      enter_state(Stage2State::S2_EXTEND_ARM_2);
-      return false;
-    }
-    
-    // 2201 -> 伸出第二段手臂
     case Stage2State::S2_EXTEND_ARM_2:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] EXTEND_ARM_2 伸出手臂");
       publish_state_command(2201, "S2_EXTEND_ARM_2", "extend_arm");
-      if (wait_ticks(50)) enter_state(Stage2State::S2_PUSH_CLAM);
+      if (wait_ticks(20)) enter_state(Stage2State::S2_PUSH_CLAM);
       return false;
     
      
@@ -363,14 +345,14 @@ bool Stage2ClamFSM::tick()
     case Stage2State::S2_LOCK_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] LOCK_BOX 鎖定箱子");
       publish_state_command(203, "S2_LOCK_BOX", "lock_box");
-      if (wait_ticks(70)) enter_state(Stage2State::S2_ROTATE_BOX_1);
+      if (wait_ticks(50)) enter_state(Stage2State::S2_ROTATE_BOX_1);
       return false;
 
     // 204, 205 -> 翻轉箱子
     case Stage2State::S2_ROTATE_BOX_1:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_1 翻轉箱子");
       publish_state_command(204, "S2_ROTATE_BOX_1", "rotate_box_1");
-      if (wait_ticks(100)) enter_state(Stage2State::S2_MOVE_BACK);
+      if (wait_ticks(80)) enter_state(Stage2State::S2_PRE_DROP_BOX);
       return false;
     
     case Stage2State::S2_MOVE_BACK: {
@@ -378,16 +360,10 @@ bool Stage2ClamFSM::tick()
         return false;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_BACK 導航後退完成");
-      enter_state(Stage2State::S2_ROTATE_BOX_2);
+      enter_state(Stage2State::S2_MOVE_TO_RETURN);
       return false;
     }
 
-    case Stage2State::S2_ROTATE_BOX_2:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] ROTATE_BOX_2 翻轉箱子");
-      publish_state_command(205, "S2_ROTATE_BOX_2", "rotate_box_2");
-      if (wait_ticks(100)) enter_state(Stage2State::S2_MOVE_TO_RETURN);
-      return false;
-      
     case Stage2State::S2_MOVE_TO_RETURN:
       if (!nav_arrived_) {
         if (!navigate_to_named_pose("stage2_return_point", 15.0f)) {
@@ -396,22 +372,19 @@ bool Stage2ClamFSM::tick()
         nav_arrived_ = true;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_TO_RETURN 移動至返回點");
-      enter_state(Stage2State::S2_DROP_BOX);
+      enter_state(Stage2State::S2_RETRACT_ARM_1);
       return false;
-    
-    // 206 -> 放下箱子
-    case Stage2State::S2_DROP_BOX:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] DROP_BOX 放下箱子");
-      publish_state_command(206, "S2_DROP_BOX", "drop_box");
-      if (wait_ticks(20)) enter_state(Stage2State::S2_RECOVERY);
+
+    // 送 206，等 1 秒後導航後退點，再去返回點
+    case Stage2State::S2_PRE_DROP_BOX:
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] PRE_DROP_BOX 放下箱子前準備");
+      publish_state_command(206, "S2_PRE_DROP_BOX", "pre_drop_box");
+      if ((ctx_->node->now() - state_enter_time_).seconds() >= 1.0) {
+        enter_state(Stage2State::S2_MOVE_BACK);
+      }
       return false;
-      
-    case Stage2State::S2_RECOVERY:
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RECOVERY 回復到初始狀態");
-      publish_state_command(207, "S2_RECOVERY", "recovery");
-      if (wait_ticks(20)) enter_state(Stage2State::S2_RETRACT_ARM_1);
-      return false;
-    
+
+
     case Stage2State::S2_RETRACT_ARM_1:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM_1 收回手臂");
       publish_state_command(2011, "S2_RETRACT_ARM_1", "retract_arm_1");

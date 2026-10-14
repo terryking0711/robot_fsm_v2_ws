@@ -211,7 +211,17 @@ int main(int argc, char** argv)
     RCLCPP_WARN(
       ros_node->get_logger(),
       "[Main] skip_stage2=true -- STAGE2_CLAM skipped, "
-      "leave_start_zone -> stage3_entry -> STAGE3_HAY");
+      "WAIT_START -> stage3_entry -> STAGE3_HAY");
+  }
+
+  // 第二關關閉手臂 state（robot_bringup.launch.py skip_stage2_arm:=true）
+  ros_node->declare_parameter("skip_stage2_arm", false);
+  ctx->skip_stage2_arm = ros_node->get_parameter("skip_stage2_arm").as_bool();
+  if (ctx->skip_stage2_arm) {
+    RCLCPP_WARN(
+      ros_node->get_logger(),
+      "[Main] skip_stage2_arm=true -- STAGE2 arm states "
+      "(2000/2001/203/204/205/206/111/2021/207) skipped");
   }
 
   // 只跑第三關（robot_bringup.launch.py only_stage3:=true）
@@ -220,8 +230,18 @@ int main(int argc, char** argv)
   if (ctx->only_stage3) {
     RCLCPP_WARN(
       ros_node->get_logger(),
-      "[Main] only_stage3=true -- LEAVE_START_ZONE / STAGE2_CLAM skipped, "
-      "mech_init -> stage3_entry -> STAGE3_HAY");
+      "[Main] only_stage3=true -- STAGE2_CLAM skipped, "
+      "stage3_entry -> STAGE3_HAY");
+  }
+
+  // 第三關重置（panel RESET -> fsm_launcher /fsm/reset_stage3 以 reset_stage3:=true 重新 launch）
+  ros_node->declare_parameter("reset_stage3", false);
+  ctx->reset_stage3 = ros_node->get_parameter("reset_stage3").as_bool();
+  if (ctx->reset_stage3) {
+    RCLCPP_WARN(
+      ros_node->get_logger(),
+      "[Main] reset_stage3=true -- relocalize at reset_pose_stage3, "
+      "stage3_entry -> STAGE3_HAY (no start signal wait)");
   }
 
   if (ctx->enable_navigation) {
@@ -236,19 +256,11 @@ int main(int argc, char** argv)
 
   // ------------------------------------------------------------------
   // 場地定位點（world frame，場地最左下角為 (0,0)）
-  // 從該場地的 named_poses_<side>.yaml 讀 start_pose / reset_pose_stage1~4，
+  // 從該場地的 named_poses_<side>.yaml 讀 reset_pose_stage3，
   // 找不到才退回同名 ROS parameter（預設值如下）。
   // ------------------------------------------------------------------
-  ctx->field_poses["start"] = load_named_pose_from_yaml(
-    ros_node, named_poses_file, "start_pose", {2.425, 1.0, 0.0}, "start_pose");
-  ctx->field_poses["reset_stage1"] = load_named_pose_from_yaml(
-    ros_node, named_poses_file, "reset_pose_stage1", {0.425, 1.0, 0.0}, "reset_pose_stage1");
-  ctx->field_poses["reset_stage2"] = load_named_pose_from_yaml(
-    ros_node, named_poses_file, "reset_pose_stage2", {0.425, 1.0, 0.0}, "reset_pose_stage2");
   ctx->field_poses["reset_stage3"] = load_named_pose_from_yaml(
     ros_node, named_poses_file, "reset_pose_stage3", {0.425, 1.0, 0.0}, "reset_pose_stage3");
-  ctx->field_poses["reset_stage4"] = load_named_pose_from_yaml(
-    ros_node, named_poses_file, "reset_pose_stage4", {0.425, 1.0, 0.0}, "reset_pose_stage4");
 
   // FSM 唯一的 /cmd_vel publisher（各 stage 共用，見 RobotContext::cmd_vel_pub）
   ctx->cmd_vel_pub = ros_node->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
@@ -325,24 +337,12 @@ int main(int argc, char** argv)
         ctx->init_status_ok = msg->data;
       });
 
-  // 場外重置請求：隊員將機器人搬到第 N 關重置點後，發布：
-  //   ros2 topic pub --once /reset_cmd std_msgs/msg/UInt8 "{data: 2}"
-  auto reset_sub =
-    ros_node->create_subscription<std_msgs::msg::UInt8>(
-      "/reset_cmd", 10,
-      [ctx](const std_msgs::msg::UInt8::SharedPtr msg) {
-        RCLCPP_WARN(
-          ctx->node->get_logger(),
-          "[Main] reset request received: stage %u", msg->data);
-        ctx->pending_reset_stage = msg->data;
-      });
-
   // 建立任務控制器，並將 robot context 傳入
   MissionController mission(ctx);
 
-  // 先模擬比賽開始的signal，先用五秒代替
+  // 先模擬比賽開始的signal，先用一秒代替
   std::thread starter([ctx]() {
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     ctx->start_signal = true;
   });
   starter.detach();

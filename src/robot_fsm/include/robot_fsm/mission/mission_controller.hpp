@@ -35,13 +35,13 @@ private:
   bool init_system();
   bool self_check();
   bool wait_start();
-  bool mech_init();
-  bool leave_start_zone();
+  bool prepare_stage2();
+  int stage2_prepare_step_ = 0;
+  bool stage2_prepare_sent_ = false;
+  rclcpp::Time stage2_prepare_time_;
   bool transition_to_named_pose(const std::string& target_name, float timeout_sec);
   bool finish_decision();
 
-  // ---- 離開出發區前的手臂抬起序列（tick-based，含間隔等待）----
-  bool run_arm_lift_sequence();
   void publish_mechanism_command(
     uint16_t command_id,
     const std::string& state_name,
@@ -52,14 +52,12 @@ private:
   // 對 cartographer 而言「重新初始化」= /finish_trajectory + /start_trajectory，
   // 是破壞性操作：已收斂的估計會被丟掉，換成 YAML 裡寫死的名目 pose，
   // 還要重新累積 submap 才會穩。所以流程是：
-  //   IDLE  -> 若 force=false 且目前定位已健康，直接 SUCCESS，完全不碰 cartographer
+  // 只在第三關重置（reset_stage3，RELOCALIZE）使用，機器人被搬過，估計必錯，一定重建：
+  //   IDLE  -> 直接進 SETTLE
   //   SETTLE-> 停穩後才送 /init_pose_cmd（新 trajectory 的 extrapolator 最脆弱，
   //            同時閃掉 STM32 動態下的 NaN odom）
   //   WAIT_STATUS -> 等 localization_manager 回報
   //   VERIFY-> manager 回 ok 後再等 pose graph 收斂，自行查 TF 驗收
-  //
-  // force=false：開機定位（LOCALIZE），已經定位好就跳過
-  // force=true ：場外重置（RELOCALIZE），機器人被搬過，估計必錯，強制重建
   enum class LocPhase
   {
     IDLE,
@@ -68,20 +66,13 @@ private:
     VERIFY
   };
 
-  LocalizeResult localize_at(const Pose2D& target_world, bool force);
+  LocalizeResult localize_at(const Pose2D& target_world);
   void reset_localize_bookkeeping();
 
   bool is_localization_healthy(
     const Pose2D& expect_world, double tol_xy, double tol_yaw) const;
   void send_init_pose_cmd(const Pose2D& target_world);
   LocalizeResult handle_localize_retry(const char* reason);
-
-  // ---- 場外重置 ----
-  // 檢查 ctx_->pending_reset_stage，若有且目前狀態允許重置，
-  // 取消進行中的導航、重建該關 FSM、切到 RELOCALIZE。
-  void handle_reset_request();
-  bool is_resettable_state(MissionState s) const;
-  void reset_nav_bookkeeping();
 
   std::shared_ptr<RobotContext> ctx_;
   MissionState state_;
@@ -129,10 +120,6 @@ private:
   static constexpr const char* kWorldFrame = "world";
   static constexpr const char* kBaseFrame = "base_footprint";
 
-  // health check 容差：判斷「是否已經定位好、可以不用重置」，嚴
-  static constexpr double kLocTolXy = 0.15;         // m
-  static constexpr double kLocTolYaw = 0.15;        // rad (~8.6 deg)
-
   // 重置後的收斂驗收容差：寬，因為 scan match 會把 pose 修到真實位置，
   // 跟我們給的名目 pose 本來就會有落差
   static constexpr double kLocVerifyTolXy = 0.30;   // m
@@ -141,36 +128,4 @@ private:
   // TF 新鮮度上限：停更代表 cartographer 掛了或還沒收斂
   static constexpr double kLocTfMaxAgeSec = 1.0;    // s
 
-  // ---- reset bookkeeping ----
-  MissionState reset_resume_state_;   // RELOCALIZE 成功後要回到的關卡
-  std::string reset_pose_key_;        // field_poses 內的重置點 key
-
-  // ---- 離開出發區前的手臂抬起序列 ----
-  enum class ArmLiftPhase
-  {
-    SEND_201,
-    WAIT_1,
-    SEND_2000,
-    WAIT_2,
-    SEND_202,
-    DONE
-  };
-  ArmLiftPhase arm_lift_phase_ = ArmLiftPhase::SEND_201;
-  rclcpp::Time arm_lift_wait_start_;
-  static constexpr double kArmLiftWaitSec = 2.0;
-
-  // ---- 離開出發區前的機構初始化（MECH_INIT）----
-  enum class MechInitPhase
-  {
-    SEND_10001,
-    WAIT,
-    SEND_20001,
-    WAIT_AFTER_20001,
-    DONE
-  };
-  MechInitPhase mech_init_phase_ = MechInitPhase::SEND_10001;
-  rclcpp::Time mech_init_wait_start_;
-  static constexpr double kMechInitWaitSec = 0.0;
-  // TEMP：10001 / 20001 之後各多停這麼久（測試用，不需要時改回 0.0）
-  static constexpr double kMechInitTempPauseSec = 3.0;
 };

@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'fsm_launcher = robot_panel_bridge.fsm_launcher:main',
+            'battery_monitor = robot_panel_bridge.battery_monitor:main',
         ],
     },
 )

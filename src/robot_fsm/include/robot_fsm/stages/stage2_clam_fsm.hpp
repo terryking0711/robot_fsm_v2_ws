@@ -54,7 +54,7 @@ private:
   static constexpr double kPushClamLinearY = 0.0;
   static constexpr double kPushClamAngularZ = 0.0;
 
-  static constexpr double kAlignLockDurationSec = 2.0;
+  static constexpr double kAlignLockDurationSec = 1.4;
   static constexpr double kAlignLockLinearX = 0.0;
   static constexpr double kAlignLockLinearY = 0.10;
   static constexpr double kAlignLockAngularZ = 0.0;

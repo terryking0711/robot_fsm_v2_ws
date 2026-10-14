@@ -73,11 +73,8 @@ Stage3HayFSM::Stage3HayFSM(std::shared_ptr<RobotContext> ctx)
   state_command_sent_(false),
   state_enter_time_(ctx_->node->now()),
   rows_valid_(false),
-  place_yaw_(0.0),
-  place_rotate_ccw_(true),
   row_idx_(0),
   row_start_time_(ctx_->node->now()),
-  row_reached_end_(false),
   empty_ticks_(0),
   pick_trigger_ready_(true),
   wait_pick_start_count_(0),
@@ -87,14 +84,21 @@ Stage3HayFSM::Stage3HayFSM(std::shared_ptr<RobotContext> ctx)
   straw_seen_(false),
   busy_hold_(false),
   aligned_(false),
+  mech_init_second_sent_(false),
   nav_goal_sent_(false),
   nav_done_(false),
   nav_success_(false),
   nav_message_(""),
   nav_active_target_(""),
   nav_retry_count_(0),
-  nav_backoff_ticks_(0)
+  nav_backoff_ticks_(0),
+  spin_goal_sent_(false),
+  spin_done_(false),
+  spin_success_(false),
+  spin_fail_count_(0),
+  spin_backoff_ticks_(0)
 {
+  spin_client_ = rclcpp_action::create_client<SpinAction>(ctx_->node, "spin");
   load_rows();
 }
 
@@ -141,11 +145,10 @@ void Stage3HayFSM::load_rows()
   for (int i = 1; i <= kRowCount; ++i) {
     const std::string start_name = "stage3_row" + std::to_string(i) + "_start";
     const std::string end_name = "stage3_row" + std::to_string(i) + "_end";
-    const bool last_row = i == kRowCount;
     double start_x, start_y, start_yaw, end_x, end_y, end_yaw;
     std::string err;
     if (!resolve_named_pose(poses, start_name, true, start_x, start_y, start_yaw, err) ||
-      !resolve_named_pose(poses, end_name, last_row, end_x, end_y, end_yaw, err))
+      !resolve_named_pose(poses, end_name, false, end_x, end_y, end_yaw, err))
     {
       RCLCPP_ERROR(node->get_logger(), "[Stage3] %s in %s", err.c_str(), file.c_str());
       return;
@@ -186,33 +189,6 @@ void Stage3HayFSM::load_rows()
       "[Stage3] row %d: start (%.3f, %.3f) heading %.3f length %.3f",
       i, row.start_x, row.start_y, row.heading, row.length);
     rows_.push_back(row);
-
-    if (last_row) {
-      // 最後一排的 end 是放置點（yaw = 掃描方向）。放置前原地轉 stage3_place_rotate 的 dyaw，
-      // dyaw 的正負號決定方向：> 0 逆時針、< 0 順時針
-      const YAML::Node rot = poses[kPlaceRotatePose];
-      const double dyaw = rot && rot["dyaw"] ? rot["dyaw"].as<double>() : 0.0;
-      if (!rot || !rot["relative_to"] || rot["relative_to"].as<std::string>() != end_name ||
-        std::fabs(dyaw) < 1e-3)
-      {
-        RCLCPP_ERROR(
-          node->get_logger(),
-          "[Stage3] '%s' must be relative_to '%s' with non-zero dyaw (> 0 ccw, < 0 cw) in %s",
-          kPlaceRotatePose, end_name.c_str(), file.c_str());
-        return;
-      }
-      double rx, ry, ryaw;
-      if (!resolve_named_pose(poses, kPlaceRotatePose, true, rx, ry, ryaw, err)) {
-        RCLCPP_ERROR(node->get_logger(), "[Stage3] %s in %s", err.c_str(), file.c_str());
-        return;
-      }
-      place_yaw_ = ryaw;
-      place_rotate_ccw_ = dyaw > 0.0;
-
-      RCLCPP_INFO(
-        node->get_logger(), "[Stage3] place rotate %+.3f rad (%s) -> yaw %.3f",
-        dyaw, place_rotate_ccw_ ? "ccw" : "cw", place_yaw_);
-    }
   }
 
   rows_valid_ = true;
@@ -457,6 +433,20 @@ bool Stage3HayFSM::tick_sweep()
   auto& clock = *ctx_->node->get_clock();
   const Stage3Row& row = rows_[row_idx_];
 
+  // 0. 夠 6 捲了（例如 WAIT_PICK 等完後 STM 才夾完第 6 捲）-> 不再掃，去放置
+  if (pick_target_reached()) {
+    start_go_to_place("SWEEP");
+    return false;
+  }
+
+  // 0.5 第四排超過排尾 -> 不管開關，立即返回（排尾後面是不能夾的 base）
+  if (past_row4_end()) {
+    publish_cmd_vel(0.0, 0.0, 0.0);
+    RCLCPP_WARN(logger, "[Stage3] SWEEP row %zu 超過排尾 %.2f m，立即返回", row_idx_ + 1, kRow4EndOvershootM);
+    enter_state(Stage3State::S3_ROW_DONE);
+    return false;
+  }
+
   // 1. 機構已經碰到稻草捲 -> 立刻停車等夾取
   //    邊緣觸發：上一捲要等 STM 回 IDLE 且開關放開才重新允許觸發，
   //    不然 WAIT_PICK 結束時 STM 還在夾 / 開關還壓著，會馬上又進 WAIT_PICK
@@ -531,7 +521,6 @@ bool Stage3HayFSM::tick_sweep()
   if (remaining <= 0.0) {
     publish_cmd_vel(0.0, 0.0, 0.0);
     RCLCPP_INFO(logger, "[Stage3] SWEEP row %zu 到排尾", row_idx_ + 1);
-    row_reached_end_ = true;
     enter_state(Stage3State::S3_ROW_DONE);
     return false;
   }
@@ -539,9 +528,14 @@ bool Stage3HayFSM::tick_sweep()
   // 4. 相機
   const auto target = fresh_straw_target();
   // 看到本排下一捲：valid + has_depth + 橫向在閘門內（超過閘門的當成隔壁排）
+  //               + 在排尾之前（第四排最後面平放當基底的 5 捲不能夾，不能拿來對準）。
+  // touch_progress = 開關碰到這捲時的沿排進度；排尾 row.length 就是開關碰到最後一個格點稻草的位置
+  const bool cam_depth = target && target->valid && target->has_depth;
+  const double touch_progress =
+    cam_depth ? progress + target->position_m.z - kCamToSwitchM : 0.0;
+  const bool cam_beyond_end = cam_depth && touch_progress > row.length + kRowEndCamMarginM;
   const bool cam_ok =
-    target && target->valid && target->has_depth &&
-    std::fabs(target->lateral_error_m) < kCamLateralGateM;
+    cam_depth && !cam_beyond_end && std::fabs(target->lateral_error_m) < kCamLateralGateM;
 
   // log 用：相機資料為什麼不能用
   char cam_state[64] = "on";
@@ -558,8 +552,14 @@ bool Stage3HayFSM::tick_sweep()
     std::snprintf(cam_state, sizeof(cam_state), "off(%s)", target->reason.c_str());
   } else if (!target->has_depth) {
     std::snprintf(cam_state, sizeof(cam_state), "off(no_depth)");
+  } else if (cam_beyond_end) {
+    std::snprintf(
+      cam_state, sizeof(cam_state), "off(beyond_end +%.2f)", touch_progress - row.length);
   } else if (!cam_ok) {
     std::snprintf(cam_state, sizeof(cam_state), "off(gate lat=%+.2f)", target->lateral_error_m);
+  } else {
+    // end = 碰到這捲時離排尾多遠（< 0 = 在排尾之前），校正 kCamToSwitchM 用
+    std::snprintf(cam_state, sizeof(cam_state), "on(end%+.2f)", touch_progress - row.length);
   }
 
   // 空排判斷：只有「畫面裡完全沒有稻草」才算。看到別排的（valid 但被閘門擋掉）、
@@ -592,9 +592,7 @@ bool Stage3HayFSM::tick_sweep()
     return false;
   }
 
-  // 最後一排一定要開到排尾（= 放置點），不提早結束
-  const bool last_row = row_idx_ + 1 >= rows_.size();
-  if (kEnableEmptyRowExit && !last_row && empty_ticks_ >= kEmptyRowTicks) {
+  if (kEnableEmptyRowExit && empty_ticks_ >= kEmptyRowTicks) {
     publish_cmd_vel(0.0, 0.0, 0.0);
     RCLCPP_INFO(
       logger, "[Stage3] SWEEP row %zu 前方沒有稻草，提早換排（剩 %.2f m）",
@@ -659,6 +657,17 @@ bool Stage3HayFSM::tick_wait_pick()
   const auto now = ctx_->node->now();
   const auto status = fresh_pick_status();
 
+  // 第四排超過排尾才碰到的不是格點上的稻草 -> 不等夾，立即返回。
+  // STM 可能已經開始夾，下一排要等它做完、開關放開才重新允許觸發
+  if (past_row4_end()) {
+    RCLCPP_WARN(
+      logger, "[Stage3] WAIT_PICK row %zu 超過排尾 %.2f m，不等夾取，立即返回",
+      row_idx_ + 1, kRow4EndOvershootM);
+    pick_trigger_ready_ = false;
+    enter_state(Stage3State::S3_ROW_DONE);
+    return false;
+  }
+
   if (!kAutoPick) {
     // 人工夾取模式：等隊友拿走稻草（開關放開），放開後再停 kManualResumeDelaySec
     if (!status || status->switch_pressed) {
@@ -687,6 +696,14 @@ bool Stage3HayFSM::tick_wait_pick()
     {
       pick_started_ = true;
       backoff_count_ = 0;
+    }
+
+    // 夾完第 6 捲（STM 已回 IDLE）就不用等滿 kPickWaitSec，直接去放置
+    if (status && status->phase != robot_interfaces::msg::StrawPickStatus::PHASE_PICKING &&
+      status->pick_count >= kPlaceAtPickCount)
+    {
+      start_go_to_place("WAIT_PICK");
+      return false;
     }
 
     // 開關壓著但 STM 一直沒開始夾（例如送 320 前就壓著，STM 只認按下那一下）-> 退後重撞。
@@ -769,18 +786,179 @@ bool Stage3HayFSM::tick_backoff()
   return false;
 }
 
-bool Stage3HayFSM::tick_rotate_at_place()
+void Stage3HayFSM::row_frame(
+  const Stage3Row& row, double x, double y, double& progress, double& offset)
+{
+  const double rel_x = x - row.start_x;
+  const double rel_y = y - row.start_y;
+  progress = rel_x * row.dir_x + rel_y * row.dir_y;
+  offset = row.dir_x * rel_y - row.dir_y * rel_x;  // > 0 = 在中線左側
+}
+
+bool Stage3HayFSM::past_row4_end()
+{
+  if (row_idx_ + 1 != rows_.size()) {
+    return false;
+  }
+  double x = 0.0, y = 0.0, yaw = 0.0;
+  if (!get_robot_pose(x, y, yaw)) {
+    return false;
+  }
+  const Stage3Row& row = rows_[row_idx_];
+  double progress = 0.0, offset = 0.0;
+  row_frame(row, x, y, progress, offset);
+  return progress > row.length + kRow4EndOvershootM;
+}
+
+bool Stage3HayFSM::tick_row_return()
+{
+  const auto logger = ctx_->node->get_logger();
+  auto& clock = *ctx_->node->get_clock();
+  const Stage3Row& row = rows_[row_idx_];
+
+  bool done = false;
+  if ((ctx_->node->now() - state_enter_time_).seconds() > kRowReturnTimeoutSec) {
+    RCLCPP_WARN(logger, "[Stage3] ROW_RETURN timeout (%.0f s)，直接換排", kRowReturnTimeoutSec);
+    done = true;
+  }
+
+  double x = 0.0, y = 0.0, yaw = 0.0;
+  if (!done && !get_robot_pose(x, y, yaw)) {
+    publish_cmd_vel(0.0, 0.0, 0.0);
+    RCLCPP_WARN_THROTTLE(logger, clock, 1000, "[Stage3] ROW_RETURN no fresh /robot_pose, hold still");
+    return false;
+  }
+
+  double progress = 0.0, offset = 0.0;
+  if (!done) {
+    row_frame(row, x, y, progress, offset);
+    if (progress <= 0.0) {
+      RCLCPP_INFO(
+        logger, "[Stage3] ROW_RETURN 退回第 %zu 排起點（progress %+.3f offset %+.3f）",
+        row_idx_ + 1, progress, offset);
+      done = true;
+    }
+  }
+
+  if (done) {
+    publish_cmd_vel(0.0, 0.0, 0.0);
+    row_idx_--;
+    RCLCPP_INFO(logger, "[Stage3] ROW_RETURN 橫移到第 %zu 排", row_idx_ + 1);
+    shift_settle_start_.reset();
+    enter_state(Stage3State::S3_ROW_SHIFT);
+    return false;
+  }
+
+  // 沿中線直線倒車：橫向 / 角度控制跟 SWEEP 沒看到稻草時一樣
+  const double vx = -(progress > kRowReturnSlowZoneM ? kSweepFastSpeed : kSweepSlowSpeed);
+  const double vy = std::clamp(-kLineLateralGain * offset, -kMaxLateralSpeed, kMaxLateralSpeed);
+  const double wz = std::clamp(
+    kYawGain * normalize_angle(row.heading - yaw), -kMaxYawRate, kMaxYawRate);
+  publish_cmd_vel(vx, vy, wz);
+
+  RCLCPP_INFO_THROTTLE(
+    logger, clock, 500, "[Stage3] ROW_RETURN row %zu progress %.2f offset %+.3f -> vx %.2f vy %+.2f wz %+.2f",
+    row_idx_ + 1, progress, offset, vx, vy, wz);
+  return false;
+}
+
+bool Stage3HayFSM::tick_row_shift()
+{
+  const auto logger = ctx_->node->get_logger();
+  auto& clock = *ctx_->node->get_clock();
+  const auto now = ctx_->node->now();
+  const Stage3Row& row = rows_[row_idx_];
+
+  // 第四排是 Nav2 剛到起點：等 velocity_smoother 停下來再開始計時
+  if (!ctx_->nav_cmd_vel_settled()) {
+    state_enter_time_ = now;
+    return false;
+  }
+
+  bool done = false;
+  if ((now - state_enter_time_).seconds() > kRowShiftTimeoutSec) {
+    RCLCPP_WARN(logger, "[Stage3] ROW_SHIFT timeout (%.0f s)，直接開始掃", kRowShiftTimeoutSec);
+    done = true;
+  }
+
+  double x = 0.0, y = 0.0, yaw = 0.0;
+  if (!done && !get_robot_pose(x, y, yaw)) {
+    publish_cmd_vel(0.0, 0.0, 0.0);
+    RCLCPP_WARN_THROTTLE(logger, clock, 1000, "[Stage3] ROW_SHIFT no fresh /robot_pose, hold still");
+    return false;
+  }
+
+  if (!done) {
+    double progress = 0.0, offset = 0.0;
+    row_frame(row, x, y, progress, offset);
+    if (std::fabs(offset) < kRowShiftTolM) {
+      // 停車後連續 kRowShiftSettleSec 都在容許內才算到；滑出去的話下面會修回來
+      publish_cmd_vel(0.0, 0.0, 0.0);
+      if (!shift_settle_start_) {
+        shift_settle_start_ = now;
+      }
+      if ((now - *shift_settle_start_).seconds() < kRowShiftSettleSec) {
+        return false;
+      }
+      RCLCPP_INFO(
+        logger, "[Stage3] ROW_SHIFT 已到第 %zu 排中線（offset %+.3f progress %+.3f）",
+        row_idx_ + 1, offset, progress);
+      done = true;
+    } else {
+      shift_settle_start_.reset();
+      double vy = std::clamp(-kLineLateralGain * offset, -kMaxLateralSpeed, kMaxLateralSpeed);
+      if (std::fabs(vy) < kMinAlignLateralSpeed) {
+        vy = std::copysign(kMinAlignLateralSpeed, vy);
+      }
+      const double wz = std::clamp(
+        kYawGain * normalize_angle(row.heading - yaw), -kMaxYawRate, kMaxYawRate);
+      publish_cmd_vel(0.0, vy, wz);
+      RCLCPP_INFO_THROTTLE(
+        logger, clock, 500, "[Stage3] ROW_SHIFT row %zu offset %+.3f -> vy %+.2f wz %+.2f",
+        row_idx_ + 1, offset, vy, wz);
+      return false;
+    }
+  }
+
+  publish_cmd_vel(0.0, 0.0, 0.0);
+  enter_state(Stage3State::S3_ROW_BEGIN);
+  return false;
+}
+
+bool Stage3HayFSM::pick_target_reached()
+{
+  const auto status = fresh_pick_status();
+  return status && status->pick_count >= kPlaceAtPickCount;
+}
+
+void Stage3HayFSM::start_go_to_place(const char* from_state)
+{
+  publish_cmd_vel(0.0, 0.0, 0.0);
+  const auto status = fresh_pick_status();
+  RCLCPP_INFO(
+    ctx_->node->get_logger(),
+    "[Stage3] %s 第 %zu 排結束（pick_count %d / %u），原地轉 180° 去放置",
+    from_state, row_idx_ + 1, status ? static_cast<int>(status->pick_count) : -1,
+    static_cast<unsigned>(kPlaceAtPickCount));
+  place_stm_idle_ = false;
+  spin_goal_sent_ = false;
+  spin_done_ = false;
+  spin_fail_count_ = 0;
+  spin_backoff_ticks_ = 0;
+  enter_state(Stage3State::S3_SPIN_180);
+}
+
+bool Stage3HayFSM::tick_spin_180()
 {
   const auto logger = ctx_->node->get_logger();
   auto& clock = *ctx_->node->get_clock();
 
-  // 剛結束導航時 velocity_smoother 還在發速度，等它停下來再開始計時
+  // 剛結束導航時 velocity_smoother 還在發速度，等它停下來
   if (!ctx_->nav_cmd_vel_settled()) {
-    state_enter_time_ = ctx_->node->now();
     return false;
   }
 
-  // 最後一捲可能還在夾：一定等 STM 回 IDLE 再轉向放置（status 斷線也一直等）
+  // 最後一捲可能還在夾：一定等 STM 不再 PICKING 再轉（status 斷線也一直等）
   if (!place_stm_idle_) {
     publish_cmd_vel(0.0, 0.0, 0.0);
     const auto status = fresh_pick_status();
@@ -788,64 +966,83 @@ bool Stage3HayFSM::tick_rotate_at_place()
       status && status->phase != robot_interfaces::msg::StrawPickStatus::PHASE_PICKING;
     if (!idle) {
       RCLCPP_INFO_THROTTLE(
-        logger, clock, 2000, "[Stage3] ROTATE_AT_PLACE 等 STM 夾完最後一捲（%.0f s）%s",
+        logger, clock, 2000, "[Stage3] SPIN_180 等 STM 夾完最後一捲（%.0f s）%s",
         (ctx_->node->now() - state_enter_time_).seconds(),
         status ? "" : "（no fresh /mechanism/straw_pick_status）");
       return false;
     }
     place_stm_idle_ = true;
-    rotate_settle_start_.reset();
-    state_enter_time_ = ctx_->node->now();  // 轉向超時從這裡開始算
   }
 
-  if ((ctx_->node->now() - state_enter_time_).seconds() > kRotateTimeoutSec) {
-    publish_cmd_vel(0.0, 0.0, 0.0);
-    RCLCPP_WARN(logger, "[Stage3] ROTATE_AT_PLACE timeout (%.0f s)，直接放置", kRotateTimeoutSec);
-    enter_state(Stage3State::S3_PLACE);
+  // 失敗後的退避期
+  if (spin_backoff_ticks_ > 0) {
+    spin_backoff_ticks_--;
     return false;
   }
 
-  double x = 0.0, y = 0.0, yaw = 0.0;
-  if (!get_robot_pose(x, y, yaw)) {
-    publish_cmd_vel(0.0, 0.0, 0.0);
-    RCLCPP_WARN_THROTTLE(logger, clock, 1000, "[Stage3] ROTATE_AT_PLACE no fresh /robot_pose, hold still");
-    return false;
-  }
-
-  const double err = normalize_angle(place_yaw_ - yaw);
-  if (std::fabs(err) < kRotateTolRad) {
-    // 停車後連續 kRotateSettleSec 都在容許內才放置；滑出去的話下面會修回來
-    publish_cmd_vel(0.0, 0.0, 0.0);
-    const auto now = ctx_->node->now();
-    if (!rotate_settle_start_) {
-      rotate_settle_start_ = now;
-    }
-    if ((now - *rotate_settle_start_).seconds() < kRotateSettleSec) {
+  if (!spin_goal_sent_) {
+    if (!spin_client_->wait_for_action_server(std::chrono::seconds(1))) {
+      RCLCPP_WARN(logger, "[Stage3] SPIN_180 /spin server not ready, waiting...");
       return false;
     }
+
+    SpinAction::Goal goal;
+    goal.target_yaw = kSpinTargetYaw;
+    goal.time_allowance = rclcpp::Duration::from_seconds(kSpinTimeAllowanceSec);
+
+    spin_goal_sent_ = true;
+    spin_done_ = false;
+    spin_success_ = false;
+
     RCLCPP_INFO(
-      logger, "[Stage3] ROTATE_AT_PLACE 轉到放置朝向 yaw %.3f（目標 %.3f，誤差 %+.3f）",
-      yaw, place_yaw_, err);
-    enter_state(Stage3State::S3_PLACE);
+      logger, "[Stage3] SPIN_180 send spin goal %.3f rad (attempt %d)",
+      kSpinTargetYaw, spin_fail_count_ + 1);
+
+    auto options = rclcpp_action::Client<SpinAction>::SendGoalOptions();
+    options.goal_response_callback =
+      [this](rclcpp_action::ClientGoalHandle<SpinAction>::SharedPtr goal_handle)
+      {
+        if (!goal_handle) {
+          spin_done_ = true;
+          spin_success_ = false;
+          RCLCPP_ERROR(ctx_->node->get_logger(), "[Stage3] SPIN_180 goal rejected");
+        }
+      };
+    options.result_callback =
+      [this](const rclcpp_action::ClientGoalHandle<SpinAction>::WrappedResult& result)
+      {
+        spin_done_ = true;
+        spin_success_ = result.code == rclcpp_action::ResultCode::SUCCEEDED;
+        ctx_->last_nav_end_time = ctx_->node->now();
+        RCLCPP_INFO(
+          ctx_->node->get_logger(), "[Stage3] SPIN_180 result success=%s",
+          spin_success_ ? "true" : "false");
+      };
+    spin_client_->async_send_goal(goal, options);
     return false;
   }
-  rotate_settle_start_.reset();
 
-  double wz = 0.0;
-  if (std::fabs(err) > kRotateSlowRad) {
-    // 還很遠：照指定方向轉（就算反方向比較近也一樣）
-    wz = place_rotate_ccw_ ? kRotateMaxSpeed : -kRotateMaxSpeed;
-  } else {
-    wz = std::clamp(kRotateGain * err, -kRotateMaxSpeed, kRotateMaxSpeed);
-    if (std::fabs(wz) < kRotateMinSpeed) {
-      wz = std::copysign(kRotateMinSpeed, err);
-    }
+  if (!spin_done_) {
+    return false;
   }
-  publish_cmd_vel(0.0, 0.0, wz);
 
-  RCLCPP_INFO_THROTTLE(
-    logger, clock, 500, "[Stage3] ROTATE_AT_PLACE yaw %.3f -> %.3f (%s) err %+.3f wz %+.2f",
-    yaw, place_yaw_, place_rotate_ccw_ ? "ccw" : "cw", err, wz);
+  spin_goal_sent_ = false;
+  spin_done_ = false;
+  if (!spin_success_) {
+    spin_fail_count_++;
+    if (spin_fail_count_ < kSpinMaxRetries) {
+      RCLCPP_ERROR(
+        logger, "[Stage3] SPIN_180 failed (%d/%d) -- retry in %.1f s",
+        spin_fail_count_, kSpinMaxRetries, kNavBackoffTicks / 10.0);
+      spin_backoff_ticks_ = kNavBackoffTicks;
+      return false;
+    }
+    RCLCPP_ERROR(
+      logger, "[Stage3] SPIN_180 failed %d times，不轉了，直接往下走", kSpinMaxRetries);
+  } else {
+    RCLCPP_INFO(logger, "[Stage3] SPIN_180 原地轉 180° 完成");
+  }
+  enter_state(Stage3State::S3_FORWARD);
   return false;
 }
 
@@ -864,17 +1061,33 @@ bool Stage3HayFSM::tick()
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage3] ENTER 第三關：稻草捲收集");
       pick_trigger_ready_ = true;
+      enter_state(Stage3State::S3_MECH_INIT);
+      return false;
+
+    case Stage3State::S3_MECH_INIT: {
+      // 10001 -> 等 3 秒 -> 20001 -> 等 5 秒 -> CROSS
+      publish_state_command(kCmdMechInitFirst, "S3_MECH_INIT", "mech_init_1");
+      const double elapsed = (ctx_->node->now() - state_enter_time_).seconds();
+      if (elapsed < kMechInitWaitAfterFirstSec) {
+        return false;
+      }
+      if (!mech_init_second_sent_) {
+        send_mechanism_command(kCmdMechInitSecond, "S3_MECH_INIT", "mech_init_2");
+        mech_init_second_sent_ = true;
+      }
+      if (elapsed < kMechInitWaitAfterFirstSec + kMechInitWaitAfterSecondSec) {
+        return false;
+      }
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage3] MECH_INIT 完成");
       enter_state(Stage3State::S3_CROSS);
       return false;
+    }
 
     case Stage3State::S3_CROSS: {
       // 剛結束導航時 velocity_smoother 還在發速度，等它停下來再開始衝
       if (!ctx_->nav_cmd_vel_settled()) {
         return false;
       }
-      // 主迴圈 10 Hz、每 tick 才發一次的話，STM 收到的指令間隔太稀，底盤會一頓一頓衝不到速。
-      // 衝田埂很短，直接在這裡以 kCrossPublishHz 固定間隔連續發完
-      // （會擋住主迴圈 kCrossDurationSec；面板 STOP 的 SIGINT 會讓 rclcpp::ok() 變 false 跳出）。
       {
         using Clock = std::chrono::steady_clock;
         const auto period = std::chrono::duration_cast<Clock::duration>(
@@ -890,7 +1103,7 @@ bool Stage3HayFSM::tick()
       }
       publish_cmd_vel(0.0, 0.0, 0.0);
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage3] CROSS 衝過田埂完成");
-      row_idx_ = 0;
+      row_idx_ = rows_.size() - 1;  // 從第四排開始掃
       enter_state(Stage3State::S3_NAV_ROW_START);
       return false;
     }
@@ -900,8 +1113,12 @@ bool Stage3HayFSM::tick()
         return false;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage3] NAV_ROW_START 抵達第 %zu 排起點", row_idx_ + 1);
-      enter_state(Stage3State::S3_ROW_BEGIN);
+      shift_settle_start_.reset();
+      enter_state(Stage3State::S3_ROW_SHIFT);
       return false;
+
+    case Stage3State::S3_ROW_SHIFT:
+      return tick_row_shift();
 
     case Stage3State::S3_ROW_BEGIN:
       // 等 velocity_smoother 停下來才進 SWEEP，避免兩邊的 /cmd_vel 交錯
@@ -909,10 +1126,13 @@ bool Stage3HayFSM::tick()
         return false;
       }
       publish_cmd_vel(0.0, 0.0, 0.0);
-      // 第 1 排：已經衝過田埂、Nav2 也抵達 stage3_row1_start 並停穩，這時才通知 STM
-      // 開始「碰到開關就自動夾取」（STM 收到 320 才 armed），避免 CROSS / 導航途中誤碰觸發。
-      // 不等 STM 確認，在 kEnablePickSendTicks 個 tick 內重送幾次，避免 micro-ROS 掉封包。
-      if (kAutoPick && row_idx_ == 0 && tick_count_ < kEnablePickSendTicks) {
+      // 換排途中 STM 才夾完第 6 捲：這排不用掃了
+      if (pick_target_reached()) {
+        start_go_to_place("ROW_BEGIN");
+        return false;
+      }
+      // 第一個掃的排（第四排）先送 320 開啟自動夾取
+      if (kAutoPick && row_idx_ + 1 == rows_.size() && tick_count_ < kEnablePickSendTicks) {
         if (tick_count_ % kEnablePickResendTicks == 0) {
           send_mechanism_command(kCmdEnableAutoPick, "S3_ROW_BEGIN", "enable_auto_pick");
         }
@@ -920,7 +1140,6 @@ bool Stage3HayFSM::tick()
         return false;
       }
       row_start_time_ = ctx_->node->now();
-      row_reached_end_ = false;
       empty_ticks_ = 0;
       backoff_count_ = 0;
       straw_seen_ = false;
@@ -943,54 +1162,53 @@ bool Stage3HayFSM::tick()
 
     case Stage3State::S3_ROW_DONE: {
       publish_cmd_vel(0.0, 0.0, 0.0);
-      const bool last_row = row_idx_ + 1 >= rows_.size();
 
-      if (last_row) {
-        // 最後一排開到排尾時，機器已經在放置點，不用再導航
-        bool at_place = row_reached_end_;
-        double x = 0.0, y = 0.0, yaw = 0.0;
-        if (!at_place && get_robot_pose(x, y, yaw)) {
-          const Stage3Row& row = rows_.back();
-          const double place_x = row.start_x + row.dir_x * row.length;
-          const double place_y = row.start_y + row.dir_y * row.length;
-          at_place = std::hypot(x - place_x, y - place_y) < kAtPlaceTolM;
-        }
-        RCLCPP_INFO(
-          ctx_->node->get_logger(),
-          "[Stage3] ROW_DONE 4 排掃描結束，%s",
-          at_place ? "已在放置點，原地轉向" : "導航到放置點");
-        enter_state(at_place ? Stage3State::S3_ROTATE_AT_PLACE : Stage3State::S3_NAV_TO_PLACE);
+      if (pick_target_reached()) {
+        start_go_to_place("ROW_DONE");
+      } else if (row_idx_ == 0) {
+        RCLCPP_WARN(
+          ctx_->node->get_logger(), "[Stage3] ROW_DONE 4 排都掃完還不到 %u 捲，照樣去放置",
+          static_cast<unsigned>(kPlaceAtPickCount));
+        start_go_to_place("ROW_DONE");
       } else {
         RCLCPP_INFO(
           ctx_->node->get_logger(),
-          "[Stage3] ROW_DONE 退回第 %zu 排起點", row_idx_ + 1);
-        enter_state(Stage3State::S3_NAV_ROW_RETURN);
+          "[Stage3] ROW_DONE 沿中線倒車退回第 %zu 排起點", row_idx_ + 1);
+        enter_state(Stage3State::S3_ROW_RETURN);
       }
       return false;
     }
 
-    case Stage3State::S3_NAV_ROW_RETURN:
-      if (!navigate_to_named_pose(rows_[row_idx_].start_pose, 30.0f)) {
+    case Stage3State::S3_ROW_RETURN:
+      return tick_row_return();
+
+    case Stage3State::S3_SPIN_180:
+      return tick_spin_180();
+
+    case Stage3State::S3_FORWARD:
+      // 等 spin 的速度指令停下來再開始計時
+      if (!ctx_->nav_cmd_vel_settled()) {
+        state_enter_time_ = ctx_->node->now();
         return false;
       }
+      if ((ctx_->node->now() - state_enter_time_).seconds() < kForwardDurationSec) {
+        publish_cmd_vel(kForwardLinearX, 0.0, 0.0);
+        return false;
+      }
+      publish_cmd_vel(0.0, 0.0, 0.0);
       RCLCPP_INFO(
-        ctx_->node->get_logger(), "[Stage3] NAV_ROW_RETURN 退回第 %zu 排起點，側移到第 %zu 排",
-        row_idx_ + 1, row_idx_ + 2);
-      row_idx_++;
-      enter_state(Stage3State::S3_NAV_ROW_START);
+        ctx_->node->get_logger(), "[Stage3] FORWARD 前進 %.2f m 完成",
+        kForwardLinearX * kForwardDurationSec);
+      enter_state(Stage3State::S3_NAV_TO_PLACE);
       return false;
 
     case Stage3State::S3_NAV_TO_PLACE:
-      // Nav2 到排尾點（yaw = 掃描方向），轉向交給 ROTATE_AT_PLACE 才能指定方向
-      if (!navigate_to_named_pose(rows_.back().end_pose, 30.0f)) {
+      if (!navigate_to_named_pose(kPlacePose, 30.0f)) {
         return false;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage3] NAV_TO_PLACE 抵達放置點");
-      enter_state(Stage3State::S3_ROTATE_AT_PLACE);
+      enter_state(Stage3State::S3_PLACE);
       return false;
-
-    case Stage3State::S3_ROTATE_AT_PLACE:
-      return tick_rotate_at_place();
 
     case Stage3State::S3_PLACE:
       if (kAutoPick) {
@@ -1004,6 +1222,18 @@ bool Stage3HayFSM::tick()
         return false;
       }
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage3] PLACE 完成");
+      enter_state(Stage3State::S3_AFTER_PLACE);
+      return false;
+
+    case Stage3State::S3_AFTER_PLACE:
+      // 先後退 MoveBackDuration，停車後送 kCmdAfterPlace
+      if ((ctx_->node->now() - state_enter_time_).seconds() < MoveBackDuration) {
+        publish_cmd_vel(MoveBackLinearX, 0.0, 0.0);
+        return false;
+      }
+      publish_cmd_vel(0.0, 0.0, 0.0);
+      publish_state_command(kCmdAfterPlace, "S3_AFTER_PLACE", "after_place");
+      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage3] AFTER_PLACE 後退完成，已送 %u", static_cast<unsigned>(kCmdAfterPlace));
       enter_state(Stage3State::S3_DONE);
       return false;
 

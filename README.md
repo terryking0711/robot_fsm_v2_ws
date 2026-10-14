@@ -50,7 +50,7 @@ graph TD
     Vision -. "topic: /vision/scene_state（待接）" .-> Main
 
     %% 場外重置
-    Operator(["場邊隊員"]) -- "topic: /reset_cmd (UInt8: 關卡編號)" --> Main
+    Operator(["場邊隊員"]) -- "panel RESET → service: /fsm/reset_stage3（停掉並以 reset_stage3:=true 重開）" --> Main
 ```
 
 ---
@@ -83,8 +83,8 @@ stateDiagram-v2
     STAGE3_HAY --> FINISH_DECISION : stage3 FSM 完成
 
     state RELOCALIZE {
-        [*] --> 重新定位 : /reset_cmd 觸發（任一階段）
-        重新定位 --> [*] : localize_at(reset_pose_stageN) 成功\n跳回該關起點
+        [*] --> 重新定位 : reset_stage3:=true 啟動（SELF_CHECK 之後）
+        重新定位 --> [*] : localize_at(reset_pose_stage3)（失敗也繼續）\n→ TRANSITION_TO_STAGE3 → STAGE3_HAY
     }
 
     FINISH_DECISION --> END_RUN
@@ -144,8 +144,8 @@ ros2 launch robot_navigation navigation_server.launch.py
 # Terminal C — 主程式
 ros2 run robot_fsm robot_fsm_main
 
-# 場外重置（隊員將機器人搬到第 N 關重置點後）
-ros2 topic pub --once /reset_cmd std_msgs/msg/UInt8 "{data: 2}"
+# 第三關重置（隊員將機器人放到 reset_pose_stage3 後，等同 panel 的 RESET TO STAGE 3）
+ros2 service call /fsm/reset_stage3 std_srvs/srv/Trigger
 ```
 
 ---
@@ -155,7 +155,7 @@ ros2 topic pub --once /reset_cmd std_msgs/msg/UInt8 "{data: 2}"
 - ✅ 非阻塞 FSM 骨架：`spin_some` + `tick` 分離、`RobotContext` mutex 共享
 - ✅ **真實 Nav2 導航鏈**：`NavigateToNamedPose` action → `navigation_server` → Nav2 `/navigate_to_pose`，含逾時、backoff 重試、goal response / result callback
 - ✅ **定位初始化整合**：`LOCALIZE` / `RELOCALIZE` 狀態透過 `/init_pose_cmd` ↔ `/init_pose_status` 與 `localization_manager` 串接
-- ✅ 場外重置流程（`/reset_cmd` → `RELOCALIZE` → 跳回該關）
+- ✅ 第三關重置（panel RESET → `/fsm/reset_stage3`：停止 → `reset_stage3:=true` 重開 → `RELOCALIZE` 重建 trajectory → `stage3_entry` → 第三關）
 - ✅ `stm_communication_node`：`/cmd_vel` → `/mecanum/cmd_vel` 20Hz 轉發 + stale timeout 自動送零速
 - ✅ `/reload_named_poses` 熱重載
 - ✅ 起點 → 第三關的展示流程可跑通
@@ -165,5 +165,5 @@ ros2 topic pub --once /reset_cmd std_msgs/msg/UInt8 "{data: 2}"
 - ❌ **各關卡子 FSM 內部仍為 `wait_ticks` 模擬**：機構動作只發 `/mechanism/command`，尚無真實 feedback 等待邏輯
 - ❌ **視覺 `/vision/scene_state`、機構 `/mechanism/feedback`、`/final_pose` 尚無 publisher**（介面已留好）
 - ❌ **比賽開始訊號**仍為開機 5 秒計時模擬，需改為實體訊號
-- ⬜ `named_poses.yaml` 與 `reset_pose_stage1~4` 為佔位座標，待實際場地量測後更新
+- ⬜ `named_poses.yaml` 與 `reset_pose_stage3` 為佔位座標，待實際場地量測後更新
 - ⬜ Stage4（媽祖）/ Stage5 程式碼存在但未接入主流程

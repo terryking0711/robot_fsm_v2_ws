@@ -1,137 +1,110 @@
-# 【MIRROR 場地】field_config.yaml 的 sides.mirror 使用這份檔案
-# ⚠ 目前內容是從 normal 複製過來的，還沒量測 mirror 場地，
-#   比賽前請把每個點重新量測填入。
-# ============================================================================
-# named poses（導航目標點）
-#
-# ⚠ 座標系已從 map frame 改為 world frame（場地最左下角為 (0,0)）。
-#    navigation_server 會把 goal 的 frame_id 設為 "world"，
-#    Nav2 planner_server 透過 world -> map 靜態 TF 自動轉換。
-#
-# 換算關係：world = map + (0.425, 1.0)，yaw 不變。
-# 以下數值是把原本 map frame 的佔位值直接加上偏移換算而來，
-# 實際比賽點位量測後再更新。
-# ============================================================================
+
 named_poses:
-  start_pose:
-    x: 0.44997966829918495
-    y: 1.0241514083483043
-    yaw: 0.0
-
-  reset_pose_stage1:
-    x: 0.425
-    y: 1.0
-    yaw: 0.0
-
-  reset_pose_stage2:
-    x: 0.425
-    y: 1.0
-    yaw: 0.0
-
-  reset_pose_stage3:
-    x: 0.425
-    y: 1.0
-    yaw: 0.0
-
-  reset_pose_stage4:
-    x: 0.425
-    y: 1.0
-    yaw: 0.0
-
-  
-  leave_start_zone:
-    x: 0.44997966829918495
-    y: 1.0241514083483043
-    yaw: 0.0
-
+  # 絕對
   # 第二關
   stage2_entry:
-    x: 2.4079140559868506
-    y: 1.21477559974762
-    yaw: 4.695
-
-  stage2_push_clam_allign:
     x: 2.695
     y: 1.1404533276007005
-    yaw: 4.695
+    yaw: -1.5881853071795862
+    precise: true
 
   stage2_move_forward_align:
     x: 2.6526696442813778
     y: -0.12247551941821744
     yaw: 4.695
+    precise: true
 
-  stage2_move_back:
-    x: 2.6704955184013617
-    y: -0.15041946071279797
+  stage2_return_point:
+    x: 2.5
+    y: -3.5
     yaw: 4.695
   
-  stage2_return_point:
-    x: 2.60789051770523
-    y: -2.5
-    yaw: 4.695
-
-
-
-
   # 第三關
-  stage3_entry:  # 相對 stage3_row1_start，格式見下方「相對點位」說明
+
+  stage3_row4_start:
+    x: 3.1235944873886696
+    y: -5.7259026254900816
+    yaw: 3.1416
+  
+  stage3_place:
+    x: 1.14
+    y: -5.8
+    yaw: 0.0
+    precise: true
+
+  #--------------------------------------------------------
+  # 相對
+
+  # 第二關
+  reset_pose_stage3:
+    x: 0.5
+    y: -3.5
+    yaw: 0.0
+
+  stage2_move_back:
+    # 改相對前的絕對值：x: 2.6704955184013617, y: -0.15041946071279797, yaw: 4.695
+    relative_to: stage2_move_forward_align
+    dx: -0.27
+    dy: 0.0
+    dyaw: 0.0
+  
+  # 第三關
+  stage3_entry:  # 相對 stage3_row4_start（第三關從第四排外面衝進去）
     # 改相對前的絕對值：x: 0.6245973535586964, y: -3.7774917229480574, yaw: 4.695
-    relative_to: stage3_row1_start
+    relative_to: stage3_row4_start
     dx: 0.85
     dy: 0.0
     dyaw: 0.0
 
   # row1
   stage3_row1_start:
-    x: 3.4
-    y: -4.6
-    yaw: 3.1416
+    # 改相對前的絕對值：x: 3.4, y: -4.6, yaw: 3.1416
+    relative_to: stage3_row4_start
+    dx: 0.0
+    dy: 1.2
+    dyaw: 0.0
   stage3_row1_end:
-    relative_to: stage3_row1_start
-    dx: -2.26
-    dy: 0.0
+    relative_to: stage3_row4_start
+    dx: -1.95
+    dy: 1.2
     dyaw: 0.0
 
   # row2
   stage3_row2_start:
-    relative_to: stage3_row1_start
+    relative_to: stage3_row4_start
     dx: 0.0
-    dy: -0.4
+    dy: 0.8
     dyaw: 0.0
   stage3_row2_end:
-    relative_to: stage3_row1_start
-    dx: -2.26
-    dy: -0.4
+    relative_to: stage3_row4_start
+    dx: -1.95
+    dy: 0.8
     dyaw: 0.0
 
   # row3
   stage3_row3_start:
-    relative_to: stage3_row1_start
+    relative_to: stage3_row4_start
     dx: 0.0
-    dy: -0.8
+    dy: 0.4
     dyaw: 0.0
   stage3_row3_end:
-    relative_to: stage3_row1_start
-    dx: -2.26
-    dy: -0.8
+    relative_to: stage3_row4_start
+    dx: -1.95
+    dy: 0.4
     dyaw: 0.0
 
   # row4
-  stage3_row4_start:
-    relative_to: stage3_row1_start
-    dx: 0.0
-    dy: -1.2
-    dyaw: 0.0
   stage3_row4_end:
-    relative_to: stage3_row1_start
-    dx: -2.26
-    dy: -1.2
-    dyaw: 0.0      # 排尾，yaw = 掃描方向（不轉；放置前的旋轉看 stage3_place_rotate）
-
-  # 放置前原地旋轉（Stage3HayFSM 讀取）：到 stage3_row4_end 後原地轉 dyaw 再放置。
-  #   dyaw > 0 = 逆時針（往左轉）、dyaw < 0 = 順時針（往右轉），從上往下看。dx / dy 固定 0。
-  stage3_place_rotate:
-    relative_to: stage3_row4_end
-    dx: 0.0
+    relative_to: stage3_row4_start
+    dx: -1.95
     dy: 0.0
-    dyaw: 3.1416   # 逆時針 180°
+    dyaw: 0.0      # 排尾
+
+
+  # 第二關到第三關先橫走再直走：只相對返回點。
+  # dx = 設定時 stage3_entry.x - stage2_return_point.x（固定偏移，world frame）。
+  stage2_to_stage3_corner:
+    relative_to: stage2_return_point
+    dx: 1.75
+    dy: 0.0
+    dyaw: 0.0
