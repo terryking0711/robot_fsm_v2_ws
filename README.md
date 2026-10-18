@@ -105,6 +105,12 @@ python3 src/robot_navigation/scripts/plot_named_poses.py mirror dit -o /tmp/fsm_
 python3 src/robot_navigation/scripts/plot_named_poses.py mirror --show
 ```
 
+### mirror 場地的 named_pose 圖片
+![image](https://hackmd.io/_uploads/B1ZBA8M3Gx.png)
+
+### normal 場地的 named_pose 圖片
+![image](https://hackmd.io/_uploads/Syz6RIG3Ge.png)
+
 圖中的定時移動是依控制常數估算的**名目軌跡**，掃排線為參考線，並非實機量測軌跡，也不保證涵蓋所有路線變體。適合檢查座標、朝向與動作方向，實際路徑仍需錄製定位資料驗證。
 
 <!-- 在此加入地圖＋座標點＋移動疊圖 -->
@@ -112,6 +118,11 @@ python3 src/robot_navigation/scripts/plot_named_poses.py mirror --show
 ### Foxglove／Lichtblick 即時開發
 
 在 Foxglove 或 Lichtblick 選擇 Foxglove WebSocket，連線至 `ws://<機器人IP>:8767`。既有環境另提供 Lichtblick 網頁入口 `http://<機器人IP>:8080`；bridge 由配套 micro-ROS 容器堆疊啟動。
+#### 測試時的 foxglove 畫面
+
+
+https://github.com/user-attachments/assets/8f405bbf-3dc4-4d92-a229-3eca00532e06
+
 
 3D panel 的 display frame 設為 `world`，加入 `/map`、TF、`/robot_pose` 與 `/named_poses_markers`，即可對照地圖、機器人位置與目標點。點位 markers 可手動啟動：
 
