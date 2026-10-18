@@ -333,7 +333,3 @@ flowchart TB
 ```
 
 START 設定新的比賽期限，STOP／RESET 保留原倒數與路線選擇。燈號依訊息新鮮度及 topic／節點存在判斷；Foxglove／Lichtblick 則供開發時檢查地圖、座標與即時資料。
-
-
-https://github.com/user-attachments/assets/f84f0316-34dd-41fd-ae32-2e04222bebea
-
