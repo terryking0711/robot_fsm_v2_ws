@@ -70,9 +70,10 @@ FSM 是決策中心：根據目前關卡、導航結果、定位、視覺與機�
 開發初期使用 Nav2 執行點位移動，但在本麥輪機器人與競賽場地上，移動表現不易調整到符合需求，調參成本高。後來針對固定點位與關卡移動實作 **`DirectTransition` 閉迴路控速**，在實機使用上更容易取得需要的移動表現。
 
 使用 nav2 的實機效果
-https://github.com/user-attachments/assets/20d47f27-70ef-4f53-84d4-dda88f34d5d7
+<video src="https://github.com/user-attachments/assets/20d47f27-70ef-4f53-84d4-dda88f34d5d7" controls width="100%"></video>
 
 使用控速的實際效果
+<video src="https://github.com/user-attachments/assets/02b318e7-a96c-47ff-a192-95f5787f165d" controls width="100%"></video>
 
 控制器持續讀取 `/robot_pose`，計算 world 座標下的位置與朝向誤差，再轉換成車體速度送到 `/cmd_vel`。可依目標設定速度上限、位置／角度容差、穩定週期與逾時策略，並依設定限制加減速、接近目標時減速。位姿過期時停車；達成條件後由 FSM 接續機構或下一段移動。
 
