@@ -36,7 +36,7 @@ void Stage2ClamFSM::enter_state(Stage2State next_state)
   while (ctx_->skip_stage2_arm) {
     Stage2State skip_to;
     switch (next_state) {
-      case Stage2State::S2_MOVE_FORWARD_ALIGN: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
+      case Stage2State::S2_MOVE_FORWARD_ALIGN: skip_to = Stage2State::S2_SHIFT_TO_RETURN; break;
       case Stage2State::S2_ALLIGN_LOCK: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
       case Stage2State::S2_LOCK_BOX: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
       case Stage2State::S2_ROTATE_BOX_1: skip_to = Stage2State::S2_MOVE_TO_RETURN; break;
@@ -290,6 +290,10 @@ void Stage2ClamFSM::publish_state_command(
 
 bool Stage2ClamFSM::tick()
 {
+  if (ctx_->direct_transition_failed) {
+    publish_cmd_vel(0.0, 0.0, 0.0);
+    return false;
+  }
   switch (state_) {
 
     case Stage2State::S2_EXTEND_ARM_2:
@@ -314,6 +318,12 @@ bool Stage2ClamFSM::tick()
       publish_state_command(2010, "S2_LIFT_ARM", "lift_arm");
       if (wait_ticks(30)) enter_state(Stage2State::S2_MOVE_FORWARD_ALIGN);
       return false;
+
+    case Stage2State::S2_SHIFT_TO_RETURN:
+      return run_timed_cmd_vel_state(
+        "SHIFT_TO_RETURN", ctx_->stage2_shift_to_return_duration_sec,
+        0.0, ctx_->stage2_shift_to_return_velocity_y, 0.0,
+        Stage2State::S2_RETRACT_ARM_1);
 
     case Stage2State::S2_MOVE_FORWARD_ALIGN:
       if (!nav_arrived_) {
@@ -365,13 +375,14 @@ bool Stage2ClamFSM::tick()
     }
 
     case Stage2State::S2_MOVE_TO_RETURN:
-      if (!nav_arrived_) {
-        if (!navigate_to_named_pose("stage2_return_point", 15.0f)) {
-          return false;
+      if (ctx_->skip_stage2_arm) {
+        if (!direct_transition_) { direct_transition_ = std::make_unique<DirectTransition>(ctx_); }
+        if (direct_transition_->tick("stage2_return_point", 20.0)) {
+          enter_state(Stage2State::S2_DONE);
         }
-        nav_arrived_ = true;
+        return false;
       }
-      RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] MOVE_TO_RETURN 移動至返回點");
+      if (!navigate_to_named_pose("stage2_return_point", 15.0f)) { return false; }
       enter_state(Stage2State::S2_RETRACT_ARM_1);
       return false;
 
@@ -379,7 +390,7 @@ bool Stage2ClamFSM::tick()
     case Stage2State::S2_PRE_DROP_BOX:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] PRE_DROP_BOX 放下箱子前準備");
       publish_state_command(206, "S2_PRE_DROP_BOX", "pre_drop_box");
-      if ((ctx_->node->now() - state_enter_time_).seconds() >= 1.0) {
+      if ((ctx_->node->now() - state_enter_time_).seconds() >= 0.1) {
         enter_state(Stage2State::S2_MOVE_BACK);
       }
       return false;
@@ -388,13 +399,15 @@ bool Stage2ClamFSM::tick()
     case Stage2State::S2_RETRACT_ARM_1:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM_1 收回手臂");
       publish_state_command(2011, "S2_RETRACT_ARM_1", "retract_arm_1");
-      if (wait_ticks(20)) enter_state(Stage2State::S2_RETRACT_ARM_2);
+      if (wait_ticks(5)) enter_state(Stage2State::S2_RETRACT_ARM_2);
       return false;
     
     case Stage2State::S2_RETRACT_ARM_2:
       RCLCPP_INFO(ctx_->node->get_logger(), "[Stage2] RETRACT_ARM_2 收回手臂");
       publish_state_command(202, "S2_RETRACT_ARM_2", "retract_arm_2");
-      if (wait_ticks(20)) enter_state(Stage2State::S2_DONE);
+      if (wait_ticks(1)) {
+        enter_state(ctx_->skip_stage2_arm ? Stage2State::S2_MOVE_TO_RETURN : Stage2State::S2_DONE);
+      }
       return false;
 
     case Stage2State::S2_DONE:

@@ -1,3 +1,4 @@
+#include <cmath>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -195,6 +196,11 @@ int main(int argc, char** argv)
   ros_node->declare_parameter<std::string>("field_side", "normal");
   ros_node->declare_parameter<std::string>("fsm_side_file", "");
   ctx->field_side = ros_node->get_parameter("field_side").as_string();
+  ros_node->declare_parameter("mirror_v2", false);
+  ctx->mirror_v2 = ros_node->get_parameter("mirror_v2").as_bool();
+  if (ctx->mirror_v2 && ctx->field_side != "mirror") {
+    throw std::runtime_error("mirror_v2 requires field_side=mirror");
+  }
   RCLCPP_WARN(
     ros_node->get_logger(),
     "[Main] FIELD SIDE = %s (named_poses_file: %s)",
@@ -203,6 +209,67 @@ int main(int argc, char** argv)
   load_command_id_remap(ros_node, fsm_side_file, ctx->command_id_remap);
   ctx->stage2_push_clam_x_sign =
     load_fsm_side_double(ros_node, fsm_side_file, "stage2_push_clam_x_sign", 1.0);
+
+  ctx->stage3_row_return_speed = load_fsm_side_double(
+    ros_node, fsm_side_file, "stage3_row_return_speed", 0.42);
+  ctx->stage3_row_return_slow_speed = load_fsm_side_double(
+    ros_node, fsm_side_file, "stage3_row_return_slow_speed", 0.25);
+  if (!std::isfinite(ctx->stage3_row_return_speed) ||
+    !std::isfinite(ctx->stage3_row_return_slow_speed) ||
+    ctx->stage3_row_return_slow_speed <= 0.0 ||
+    ctx->stage3_row_return_speed < ctx->stage3_row_return_slow_speed)
+  {
+    throw std::runtime_error("ROW_RETURN requires 0 < slow_speed <= speed");
+  }
+
+  ctx->stage3_row_shift_max_speed = load_fsm_side_double(
+    ros_node, fsm_side_file, "stage3_row_shift_max_speed", 0.16);
+  if (!std::isfinite(ctx->stage3_row_shift_max_speed) || ctx->stage3_row_shift_max_speed <= 0.0) {
+    throw std::runtime_error("stage3_row_shift_max_speed must be finite and positive");
+  }
+
+  // DIT runs stage 3 with the same motion settings as mirror.
+  if (ctx->field_side == "mirror" || ctx->field_side == "dit") {
+    ctx->stage2_shift_to_return_velocity_y = load_fsm_side_double(
+      ros_node, fsm_side_file, "stage2_shift_to_return_velocity_y", -0.267);
+    ctx->stage2_shift_to_return_duration_sec = load_fsm_side_double(
+      ros_node, fsm_side_file, "stage2_shift_to_return_duration_sec", 1.7);
+    ctx->stage3_cross_accel_distance = load_fsm_side_double(
+      ros_node, fsm_side_file, "stage3_cross_accel_distance", 0.2);
+    ctx->stage3_cross_max_speed = load_fsm_side_double(
+      ros_node, fsm_side_file, "stage3_cross_max_speed", 0.6);
+    ctx->stage3_cross_cruise_duration_sec = load_fsm_side_double(
+      ros_node, fsm_side_file, "stage3_cross_cruise_duration_sec", 0.8);
+    ctx->stage3_cross_timeout_sec = load_fsm_side_double(
+      ros_node, fsm_side_file, "stage3_cross_timeout_sec", 10.0);
+    if (!std::isfinite(ctx->stage3_cross_accel_distance) || ctx->stage3_cross_accel_distance <= 0.0 ||
+      !std::isfinite(ctx->stage3_cross_max_speed) || ctx->stage3_cross_max_speed <= 0.05 ||
+      !std::isfinite(ctx->stage3_cross_cruise_duration_sec) || ctx->stage3_cross_cruise_duration_sec <= 0.0 ||
+      !std::isfinite(ctx->stage3_cross_timeout_sec) ||
+      ctx->stage3_cross_timeout_sec <= ctx->stage3_cross_cruise_duration_sec)
+    {
+      throw std::runtime_error("invalid mirror/DIT CROSS settings");
+    }
+    if (!std::isfinite(ctx->stage2_shift_to_return_velocity_y) ||
+      !std::isfinite(ctx->stage2_shift_to_return_duration_sec) ||
+      ctx->stage2_shift_to_return_duration_sec <= 0.0)
+    {
+      throw std::runtime_error("invalid mirror/DIT SHIFT_TO_RETURN settings");
+    }
+  }
+
+  ros_node->declare_parameter<double>("match_deadline_unix_sec", 0.0);
+  const double deadline_unix = ros_node->get_parameter("match_deadline_unix_sec").as_double();
+  if (deadline_unix > 0.0) {
+    const double unix_now = std::chrono::duration<double>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    ctx->match_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(deadline_unix - unix_now));
+    RCLCPP_INFO(ros_node->get_logger(),
+      "[Main] match timer: %.1f s remaining; stop collecting below %.0f s",
+      ctx->match_remaining_sec(), RobotContext::kStage3ReturnReserveSec);
+  }
 
   // 略過第二關（field_config.yaml 該 side 的 skip_stage2，由 robot_bringup.launch.py 傳入）
   ros_node->declare_parameter("skip_stage2", false);
@@ -234,14 +301,32 @@ int main(int argc, char** argv)
       "stage3_entry -> STAGE3_HAY");
   }
 
-  // 第三關重置（panel RESET -> fsm_launcher /fsm/reset_stage3 以 reset_stage3:=true 重新 launch）
+  ros_node->declare_parameter("stage3_motion_test", false);
+  ctx->stage3_motion_test = ros_node->get_parameter("stage3_motion_test").as_bool();
+  if (ctx->stage3_motion_test && (ctx->field_side != "dit" || !ctx->enable_navigation)) {
+    throw std::runtime_error("stage3_motion_test requires field_side=dit and enable_navigation=true");
+  }
+
+  ros_node->declare_parameter("reset_stage2", false);
   ros_node->declare_parameter("reset_stage3", false);
+  ctx->reset_stage2 = ros_node->get_parameter("reset_stage2").as_bool();
   ctx->reset_stage3 = ros_node->get_parameter("reset_stage3").as_bool();
+  if (ctx->stage3_motion_test && (ctx->reset_stage2 || ctx->reset_stage3)) {
+    throw std::runtime_error("stage3_motion_test cannot be combined with S2/S3 RESET");
+  }
+  if (ctx->reset_stage2 && ctx->reset_stage3) {
+    throw std::runtime_error("reset_stage2 and reset_stage3 are mutually exclusive");
+  }
+  if (ctx->reset_stage2) {
+    ctx->only_stage3 = false;
+    ctx->skip_stage2 = false;
+    ctx->skip_stage2_arm = true;
+    RCLCPP_WARN(ros_node->get_logger(),
+      "[Main] S2 RESET: keep localization/deadline, rerun stage 2 -> stage 3");
+  }
   if (ctx->reset_stage3) {
-    RCLCPP_WARN(
-      ros_node->get_logger(),
-      "[Main] reset_stage3=true -- relocalize at reset_pose_stage3, "
-      "stage3_entry -> STAGE3_HAY (no start signal wait)");
+    RCLCPP_WARN(ros_node->get_logger(),
+      "[Main] S3 RESET: keep localization/deadline, DirectTransition corner -> stage3_entry");
   }
 
   if (ctx->enable_navigation) {
@@ -256,6 +341,7 @@ int main(int argc, char** argv)
 
   // ------------------------------------------------------------------
   // 場地定位點（world frame，場地最左下角為 (0,0)）
+  // Legacy localization tooling reads reset_pose_stage3; S2/S3 RESET do not use it.
   // 從該場地的 named_poses_<side>.yaml 讀 reset_pose_stage3，
   // 找不到才退回同名 ROS parameter（預設值如下）。
   // ------------------------------------------------------------------
@@ -348,12 +434,16 @@ int main(int argc, char** argv)
   starter.detach();
 
   // 主循環，就跟 Arduino 的 loop() 一樣
-  rclcpp::WallRate loop_rate(10);
-
-  // 呼叫 mission.tick()
+  // Service timers/localization at 100 Hz, while preserving the FSM's 10 Hz
+  // tick counts (all wait_ticks durations depend on that rate).
+  rclcpp::WallRate loop_rate(100);
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(ros_node);
+  unsigned tick_divider = 0;
   while (rclcpp::ok()) {
-    rclcpp::spin_some(ros_node);
-    mission.tick();
+    executor.spin_some();
+    if (tick_divider == 0) { mission.tick(); }
+    tick_divider = (tick_divider + 1) % 10;
     loop_rate.sleep();
   }
 

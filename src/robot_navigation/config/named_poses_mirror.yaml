@@ -3,32 +3,31 @@ named_poses:
   # 絕對
   # 第二關
   stage2_entry:
-    x: 2.695
-    y: 1.1404533276007005
+    x: 2.735
+    y: 1.11
     yaw: -1.5881853071795862
-    precise: true
 
   stage2_move_forward_align:
     x: 2.6526696442813778
     y: -0.12247551941821744
-    yaw: 4.695
+    yaw: -1.5881853071795862
     precise: true
 
   stage2_return_point:
     x: 2.5
-    y: -3.5
-    yaw: 4.695
+    y: -3.6
+    yaw: 3.1416
   
   # 第三關
 
   stage3_row4_start:
-    x: 3.1235944873886696
+    x: 3.142
     y: -5.7259026254900816
     yaw: 3.1416
   
   stage3_place:
-    x: 1.14
-    y: -5.8
+    x: 0.93
+    y: -5.73
     yaw: 0.0
     precise: true
 
@@ -52,7 +51,7 @@ named_poses:
   stage3_entry:  # 相對 stage3_row4_start（第三關從第四排外面衝進去）
     # 改相對前的絕對值：x: 0.6245973535586964, y: -3.7774917229480574, yaw: 4.695
     relative_to: stage3_row4_start
-    dx: 0.85
+    dx: 0.7
     dy: 0.0
     dyaw: 0.0
 
@@ -65,7 +64,7 @@ named_poses:
     dyaw: 0.0
   stage3_row1_end:
     relative_to: stage3_row4_start
-    dx: -1.95
+    dx: -2.05
     dy: 1.2
     dyaw: 0.0
 
@@ -77,7 +76,7 @@ named_poses:
     dyaw: 0.0
   stage3_row2_end:
     relative_to: stage3_row4_start
-    dx: -1.95
+    dx: -2.05
     dy: 0.8
     dyaw: 0.0
 
@@ -89,7 +88,7 @@ named_poses:
     dyaw: 0.0
   stage3_row3_end:
     relative_to: stage3_row4_start
-    dx: -1.95
+    dx: -2.05
     dy: 0.4
     dyaw: 0.0
 
@@ -107,4 +106,18 @@ named_poses:
     relative_to: stage2_return_point
     dx: 1.75
     dy: 0.0
+    dyaw: 0.0
+
+  # row3 排尾後方 70 cm，朝向相對排尾轉 180 度。dx/dy 為 world frame。
+  stage3_place_approach:
+    relative_to: stage3_row4_end
+    dx: 1.0
+    dy: 0.2
+    dyaw: 3.141592653589793
+
+  # START MIRROR V2 only; world y + 0.4 m, same heading.
+  s3_entry_v2:
+    relative_to: stage3_entry
+    dx: 0.0
+    dy: 0.4
     dyaw: 0.0

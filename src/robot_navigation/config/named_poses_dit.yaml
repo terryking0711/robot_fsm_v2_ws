@@ -40,7 +40,7 @@ named_poses:
   stage3_entry:  # 相對 stage3_row4_start（第三關從第四排外面衝進去）
     relative_to: stage3_row4_start
     dx: 0.0
-    dy: -0.7
+    dy: -0.8
     dyaw: 0.0
 
   # row1
@@ -53,7 +53,7 @@ named_poses:
   stage3_row1_end: # 相對
     relative_to: stage3_row4_start
     dx: 1.2
-    dy: 1.95
+    dy: 2.05
     dyaw: 0.0
 
   # row2
@@ -65,7 +65,7 @@ named_poses:
   stage3_row2_end: # 相對
     relative_to: stage3_row4_start
     dx: 0.8
-    dy: 1.95
+    dy: 2.05
     dyaw: 0.0
 
   # row3
@@ -77,13 +77,13 @@ named_poses:
   stage3_row3_end: # 相對
     relative_to: stage3_row4_start
     dx: 0.4
-    dy: 1.95
+    dy: 2.05
     dyaw: 0.0
 
   # row4
   stage3_row4_start: # 絕對（第三關所有點都相對這個點）
     x: -0.15133147826470222
-    y: 2.1708418538001313
+    y: 2.1808418538001313
     yaw: 1.5623
   stage3_row4_end: # 相對
     relative_to: stage3_row4_start
@@ -93,9 +93,8 @@ named_poses:
 
   stage3_place: # 絕對
     x: -0.22742
-    y: 4.376618
+    y: 4.41
     yaw: -1.579285
-    precise: true
 
   # 第二關到第三關先橫走再直走：只相對返回點。
   # dx = 設定時 stage3_entry.x - stage2_return_point.x（固定偏移，world frame）。
@@ -104,3 +103,10 @@ named_poses:
     dx: -7.950226503208167
     dy: 0.0
     dyaw: 0.0
+
+  # row4 排尾後方 70 cm，朝向相對排尾轉 180 度。dx/dy 為 world frame。
+  stage3_place_approach:
+    relative_to: stage3_row4_end
+    dx: 0.1
+    dy: -1.0
+    dyaw: 3.141592653589793

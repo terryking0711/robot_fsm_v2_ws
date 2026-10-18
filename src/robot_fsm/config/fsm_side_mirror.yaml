@@ -23,3 +23,78 @@ command_id_remap:
 # S2_PUSH_CLAM 的 linear.x 方向：mirror 場地和 normal 相反
 #   實際送出 = Stage2ClamFSM::kPushClamLinearX (-0.1) * 這個值
 stage2_push_clam_x_sign: -1.0
+
+# 車體 y 方向橫移；不是目標導航，因此調 signed velocity，單位 m/s。
+stage2_shift_to_return_velocity_y: -0.267
+stage2_shift_to_return_duration_sec: 1.7
+
+# 各目標的 DirectTransition 設定；修改後重啟 FSM 即生效。
+# max_speed 為平面合速度上限（m/s），位置 m，角度 deg。
+direct_transition:
+  # Stage 3 轉向點：依 /robot_pose 直接控速，不使用 Nav2。修改後重啟 FSM。
+  stage3_place_approach:
+    max_accel: 1.8           # 平面加速度上限，m/s²
+    max_decel: 1.2           # 平面減速度上限，m/s²
+    max_speed: 0.5          # 平面合速度上限，m/s
+    min_speed: 0.08          # 接近目標的最低平移速度，m/s
+    xy_tolerance: 0.1       # 位置容許誤差，m
+    yaw_tolerance_deg: 5.0   # 朝向容許誤差，度
+    require_yaw: true       # 位置與朝向均到位才前往 place
+    settle_cycles: 3        # 連續到位週期數（FSM 10 Hz）
+    continue_on_timeout: false  # 10 秒超時停車，不跳過轉向點
+  # 入口精度：4 cm / 2.5 度；兩點可分別調整，不影響 normal。
+  stage2_entry:
+    max_accel: 1.5          # 平面加速度，m/s²
+    max_decel: 1.2          # 平面減速度，m/s²
+    max_speed: 0.4
+    min_speed: 0.05
+    xy_tolerance: 0.04
+    yaw_tolerance_deg: 2.5
+    require_yaw: true
+    settle_cycles: 3
+    continue_on_timeout: false  # 超時停車，避免未對準設定 yaw 就放行
+  stage3_entry:
+    max_accel: 1.8          # 平面加速度，m/s²
+    max_decel: 1.2          # 平面減速度，m/s²
+    max_speed: 0.4
+    min_speed: 0.05
+    xy_tolerance: 0.04
+    yaw_tolerance_deg: 2.5
+    require_yaw: true
+    settle_cycles: 3
+    continue_on_timeout: false  # 超時停車，避免未對準設定 yaw 就放行
+  s3_entry_v2:
+    max_accel: 1.8          # 平面加速度，m/s²
+    max_decel: 1.2          # 平面減速度，m/s²
+    max_speed: 0.4
+    min_speed: 0.05
+    xy_tolerance: 0.04
+    yaw_tolerance_deg: 2.5
+    require_yaw: true
+    settle_cycles: 3
+    continue_on_timeout: false  # 超時停車，避免未對準設定 yaw 就放行
+  stage2_return_point:
+    max_speed: 0.65
+  stage2_to_stage3_corner:
+    max_speed: 0.65
+  stage3_place:
+    max_speed: 0.50
+    max_accel: 1.8           # 平面加速度上限，m/s²
+    max_decel: 1.2           # 平面減速度上限，m/s²
+
+# Nav2 /spin 速度倍率；修改後需重啟 mirror 導航。
+# 同時調整 behavior_server 與 smoother 的角速度／加速度限制。
+mirror_spin_speed_scale: 2.0
+
+# S3_CROSS：實際車體前進多少 m 內加速到 max_speed，再維持 cruise_duration_sec。
+# mirror 決賽設定；可依場地調整，不是 KP/KI 參數。
+stage3_cross_accel_distance: 0.15
+stage3_cross_max_speed: 0.6
+stage3_cross_cruise_duration_sec: 1.0
+stage3_cross_timeout_sec: 10.0
+
+stage3_row_shift_max_speed: 0.2
+
+# S3_ROW_RETURN：正值 m/s，程式自動轉成倒車負速度，與 SWEEP 完全獨立。
+stage3_row_return_speed: 0.6
+stage3_row_return_slow_speed: 0.25  # 距排頭 0.35 m 內使用

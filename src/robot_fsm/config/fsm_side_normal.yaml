@@ -7,3 +7,24 @@ command_id_remap: {}
 
 # S2_PUSH_CLAM 的 linear.x 方向（normal = 1.0，mirror 是 -1.0，說明見 fsm_side_mirror.yaml）
 stage2_push_clam_x_sign: 1.0
+
+# S3_ROW_SHIFT：兩排間橫移的獨立速度上限（m/s），接近中線仍依誤差減速。
+stage3_row_shift_max_speed: 0.16
+
+# S3_ROW_RETURN：正值 m/s，程式自動轉成倒車負速度，與 SWEEP 完全獨立。
+stage3_row_return_speed: 0.42
+stage3_row_return_slow_speed: 0.25  # 距排頭 0.35 m 內使用
+
+# 各目標的直接控速設定
+direct_transition:
+  # Stage 3 轉向點：依 /robot_pose 直接控速，不使用 Nav2。修改後重啟 FSM。
+  stage3_place_approach:
+    max_accel: 0.8           # 平面加速度上限，m/s²
+    max_decel: 1.2           # 平面減速度上限，m/s²
+    max_speed: 0.30          # 平面合速度上限，m/s
+    min_speed: 0.05          # 接近目標的最低平移速度，m/s
+    xy_tolerance: 0.05       # 位置容許誤差，m
+    yaw_tolerance_deg: 3.0   # 朝向容許誤差，度
+    require_yaw: true       # 位置與朝向均到位才前往 place
+    settle_cycles: 3        # 連續到位週期數（FSM 10 Hz）
+    continue_on_timeout: false  # 10 秒超時停車，不跳過轉向點

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "robot_fsm/common/direct_transition.hpp"
+
 #include <memory>
 #include <string>
 
@@ -39,7 +41,9 @@ private:
   int stage2_prepare_step_ = 0;
   bool stage2_prepare_sent_ = false;
   rclcpp::Time stage2_prepare_time_;
-  bool transition_to_named_pose(const std::string& target_name, float timeout_sec);
+  bool transition_to_named_pose(
+    const std::string& target_name, float timeout_sec, bool continue_on_timeout = false);
+  bool transition_to_entry(const std::string& target_name, float timeout_sec);
   bool finish_decision();
 
   void publish_mechanism_command(
@@ -52,7 +56,7 @@ private:
   // 對 cartographer 而言「重新初始化」= /finish_trajectory + /start_trajectory，
   // 是破壞性操作：已收斂的估計會被丟掉，換成 YAML 裡寫死的名目 pose，
   // 還要重新累積 submap 才會穩。所以流程是：
-  // 只在第三關重置（reset_stage3，RELOCALIZE）使用，機器人被搬過，估計必錯，一定重建：
+  // Legacy explicit RELOCALIZE helper; S2/S3 RESET bypass it and keep localization:
   //   IDLE  -> 直接進 SETTLE
   //   SETTLE-> 停穩後才送 /init_pose_cmd（新 trajectory 的 extrapolator 最脆弱，
   //            同時閃掉 STM32 動態下的 NaN odom）
@@ -74,6 +78,7 @@ private:
   void send_init_pose_cmd(const Pose2D& target_world);
   LocalizeResult handle_localize_retry(const char* reason);
 
+  std::unique_ptr<DirectTransition> direct_transition_;
   std::shared_ptr<RobotContext> ctx_;
   MissionState state_;
 

@@ -10,11 +10,8 @@
 //                                                                |                           |
 //               （還沒夠 6 捲）       row_idx_-- <- ROW_RETURN <--+---------------------------┤  沿中線直線倒車回本排起點，
 //                                                                                            |  再橫移到下一排中線（不用 Nav2）
-//               （夠 6 捲 / 第一排也掃完）        SPIN_180 <---------------------------------┘  等 STM 不再 PICKING，Nav2 spin 原地轉 180°
-//                                                   |                （ROW_BEGIN / SWEEP / WAIT_PICK 中夠 6 捲也直接進來）
-//                                                FORWARD             發 /cmd_vel 往機器 +x 前進 20 cm
-//                                                   |
-//                                             NAV_TO_PLACE           Nav2 到 stage3_place
+//               （夠 6 捲 / 第一排也掃完） -> NAV_TO_PLACE
+//                         等 STM 不再 PICKING -> stage3_place_approach（轉向）-> stage3_place
 //                                                   |
 //                                  PLACE -> AFTER_PLACE -> DONE
 //
@@ -34,9 +31,7 @@ enum class Stage3State
   S3_BACKOFF,        // 開關壓著但 STM 沒開始夾（例如送 320 前就壓著）：後退到開關放開，再回 SWEEP 重撞
   S3_ROW_DONE,       // 這排結束：停車，決定下一步
   S3_ROW_RETURN,     // FSM 發 /cmd_vel 沿這排中線直線倒車回起點，之後橫移到下一排（4 -> 3 -> 2 -> 1）
-  S3_SPIN_180,       // 夠 6 捲（或 4 排都掃完）：等 STM 不再 PICKING，Nav2 spin 原地轉 180°
-  S3_FORWARD,        // 發 /cmd_vel 往機器 +x 前進 20 cm
-  S3_NAV_TO_PLACE,   // Nav2 導航到放置點 stage3_place
+  S3_NAV_TO_PLACE,   // 先到轉向點 stage3_place_approach，再到 stage3_place
   S3_PLACE,          // 送放置指令，固定等待
   S3_AFTER_PLACE,    // 發 /cmd_vel 後退，再送 9991
   S3_DONE,           // 第三關完成

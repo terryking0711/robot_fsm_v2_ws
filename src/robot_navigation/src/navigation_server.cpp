@@ -16,8 +16,8 @@ namespace
 
 // ---- fine_align（Nav2 到點後的精對位）----
 // 底盤是 Omni（麥輪）：x / y / yaw 三軸各自 P 控制，同時修。
-// 輸出發到 cmd_vel_nav（velocity_smoother 的輸入），/cmd_vel 仍只有 smoother 一個 producer，
-// 不必像 FSM 自己控速那樣先等 1.2 s 讓 smoother timeout。
+// 微調輸出發到 cmd_vel_nav（velocity_smoother 的輸入）。
+// 取消／逾時時額外在 /cmd_vel 發零，等 Nav2 結束並排空 smoother 後才放行 FSM。
 // 最低速度要高於 velocity_smoother 的 deadband_velocity [0.02, 0.02, 0.01]，否則會被吃成 0。
 constexpr char kFineCmdTopic[] = "/cmd_vel_nav";
 constexpr char kBaseFrame[] = "base_footprint";
@@ -127,6 +127,8 @@ NavigationServer::NavigationServer()
   this->get_parameter("global_frame", global_frame_);
   this->get_parameter("server_wait_sec", server_wait_sec_);
   this->get_parameter("default_timeout_sec", default_timeout_sec_);
+
+  stop_cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
 
   load_named_poses();
 
@@ -312,6 +314,41 @@ void NavigationServer::handle_accepted(
   }.detach();
 }
 
+void NavigationServer::hold_stop()
+{
+  rclcpp::WallRate rate(20.0);
+  const auto end = std::chrono::steady_clock::now() + 1200ms;
+  while (rclcpp::ok() && std::chrono::steady_clock::now() < end) {
+    fine_cmd_pub_->publish(geometry_msgs::msg::Twist());
+    stop_cmd_pub_->publish(geometry_msgs::msg::Twist());
+    rate.sleep();
+  }
+}
+
+void NavigationServer::cancel_nav2_and_stop(
+  const NavigateToPoseGoalHandle::SharedPtr & nav_goal_handle)
+{
+  fine_cmd_pub_->publish(geometry_msgs::msg::Twist());
+  stop_cmd_pub_->publish(geometry_msgs::msg::Twist());
+  auto terminal = nav2_client_->async_get_result(nav_goal_handle);
+  auto cancel = nav2_client_->async_cancel_goal(nav_goal_handle);
+  rclcpp::WallRate rate(20.0);
+  while (rclcpp::ok() && terminal.wait_for(0ms) != std::future_status::ready) {
+    // Do not release the FSM while Nav2 can still command motion.
+    fine_cmd_pub_->publish(geometry_msgs::msg::Twist());
+    stop_cmd_pub_->publish(geometry_msgs::msg::Twist());
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+      "Waiting for Nav2 to terminate after cancellation; holding zero velocity");
+    if (cancel.valid() && cancel.wait_for(0ms) == std::future_status::ready) {
+      if (cancel.get()->goals_canceling.empty()) {
+        RCLCPP_ERROR(this->get_logger(), "Nav2 did not accept cancellation; keeping stop active");
+      }
+    }
+    rate.sleep();
+  }
+  hold_stop();
+}
+
 void NavigationServer::execute(
   const std::shared_ptr<NavigateToNamedPoseGoalHandle> goal_handle)
 {
@@ -420,13 +457,16 @@ void NavigationServer::execute(
   auto nav_result_future =
     nav2_client_->async_get_result(nav_goal_handle);
 
-  const auto start_time = this->now();
+  const auto start_time = std::chrono::steady_clock::now();
   const double timeout_sec =
     goal->timeout_sec > 0.0 ? goal->timeout_sec : default_timeout_sec_;
+  const auto deadline = start_time +
+    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(timeout_sec));
 
   while (rclcpp::ok()) {
     if (goal_handle->is_canceling()) {
-      nav2_client_->async_cancel_goal(nav_goal_handle);
+      cancel_nav2_and_stop(nav_goal_handle);
 
       result->success = false;
       result->message = "NavigateToNamedPose canceled.";
@@ -440,9 +480,8 @@ void NavigationServer::execute(
       break;
     }
 
-    const double elapsed = (this->now() - start_time).seconds();
-    if (elapsed > timeout_sec) {
-      nav2_client_->async_cancel_goal(nav_goal_handle);
+    if (std::chrono::steady_clock::now() >= deadline) {
+      cancel_nav2_and_stop(nav_goal_handle);
 
       result->success = false;
       result->message =
@@ -460,15 +499,25 @@ void NavigationServer::execute(
   if (nav_result.code == rclcpp_action::ResultCode::SUCCEEDED) {
     bool fine_converged = true;
     if (named_pose->precise) {
-      const bool converged = fine_align(goal_handle, *named_pose);
+      const bool converged = fine_align(goal_handle, *named_pose, deadline);
       fine_converged = converged;
 
       if (goal_handle->is_canceling()) {
+        hold_stop();
         result->success = false;
         result->message = "NavigateToNamedPose canceled during fine_align.";
         goal_handle->canceled(result);
 
         RCLCPP_WARN(this->get_logger(), "%s", result->message.c_str());
+        return;
+      }
+
+      if (std::chrono::steady_clock::now() >= deadline) {
+        hold_stop();
+        result->success = false;
+        result->message = "NavigateToNamedPose timeout after " +
+          std::to_string(timeout_sec) + " s: " + goal->target_name;
+        goal_handle->abort(result);
         return;
       }
 
@@ -505,7 +554,8 @@ void NavigationServer::execute(
 
 bool NavigationServer::fine_align(
   const std::shared_ptr<NavigateToNamedPoseGoalHandle> goal_handle,
-  const NamedPose2D & target)
+  const NamedPose2D & target,
+  const std::chrono::steady_clock::time_point & deadline)
 {
   auto feedback = std::make_shared<NavigateToNamedPose::Feedback>();
   feedback->progress = 0.99;
@@ -519,7 +569,8 @@ bool NavigationServer::fine_align(
 
   rclcpp::Rate rate(20.0);
   while (rclcpp::ok() && !goal_handle->is_canceling()) {
-    if ((this->now() - start_time).seconds() > kFineTimeoutSec) {
+    if (std::chrono::steady_clock::now() >= deadline ||
+      (this->now() - start_time).seconds() > kFineTimeoutSec) {
       stop_reason = "timeout";
       break;
     }

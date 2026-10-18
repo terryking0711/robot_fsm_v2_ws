@@ -8,6 +8,7 @@ enum class Stage2State
   S2_MOVE_FORWARD_ALIGN,  // move forward and align to the box
   S2_ALLIGN_LOCK,   // keep publishing cmd_vel before locking the box
   S2_LIFT_ARM,        // lift arm
+  S2_SHIFT_TO_RETURN, // 直接橫移 1 秒後導航返回點
   S2_LOCK_BOX,        // lock the box
   S2_ROTATE_BOX_1,     // rotate box upward and downward
   S2_MOVE_BACK,

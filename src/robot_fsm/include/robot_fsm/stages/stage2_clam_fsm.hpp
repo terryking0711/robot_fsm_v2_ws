@@ -1,5 +1,7 @@
 #pragma once
 
+#include "robot_fsm/common/direct_transition.hpp"
+
 #include <chrono>
 #include <memory>
 #include <string>
@@ -40,6 +42,7 @@ private:
   // MissionController::transition_to_named_pose）。
   bool navigate_to_named_pose(const std::string& target_name, float timeout_sec);
 
+  std::unique_ptr<DirectTransition> direct_transition_;
   std::shared_ptr<RobotContext> ctx_;
   Stage2State state_;
   int tick_count_;
@@ -48,13 +51,16 @@ private:
   bool timed_cmd_vel_started_;  // run_timed_cmd_vel_state 是否已開始計時
 
   // 可在這裡直接調整：秒數 / 速度參數，所有定時前進狀態都共用這些值。
-  static constexpr double kPushClamDurationSec = 7.8;
+  static constexpr double kPushClamDurationSec = 1.5;
   // normal 場地的值；mirror 會再乘上 fsm_side_mirror.yaml 的 stage2_push_clam_x_sign (-1)
-  static constexpr double kPushClamLinearX = -0.1;
+  static constexpr double kPushClamLinearX = -0.65;
   static constexpr double kPushClamLinearY = 0.0;
   static constexpr double kPushClamAngularZ = 0.0;
 
-  static constexpr double kAlignLockDurationSec = 1.4;
+  // SHIFT_TO_RETURN reads RobotContext's velocity/duration;
+  // mirror overrides them in fsm_side_mirror.yaml.
+
+  static constexpr double kAlignLockDurationSec = 1.5;
   static constexpr double kAlignLockLinearX = 0.0;
   static constexpr double kAlignLockLinearY = 0.10;
   static constexpr double kAlignLockAngularZ = 0.0;

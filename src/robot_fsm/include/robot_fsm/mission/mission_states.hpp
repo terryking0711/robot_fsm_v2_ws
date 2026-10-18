@@ -18,7 +18,7 @@ enum class MissionState
 
   STAGE3_HAY,
 
-  RELOCALIZE,        // 第三關重置（reset_stage3）：在 reset_pose_stage3 重建 trajectory，之後去 stage3_entry
+  RELOCALIZE,        // Legacy explicit localization path; S2/S3 RESET do not enter it
 
   FINISH_DECISION,
   EARLY_STOP,

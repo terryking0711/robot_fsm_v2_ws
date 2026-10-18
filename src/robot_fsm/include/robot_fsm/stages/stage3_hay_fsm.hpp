@@ -7,16 +7,15 @@
 #include <vector>
 
 #include <geometry_msgs/msg/twist.hpp>
-#include <nav2_msgs/action/spin.hpp>
-#include <rclcpp_action/rclcpp_action.hpp>
 
 #include "robot_fsm/common/robot_context.hpp"
+#include "robot_fsm/common/direct_transition.hpp"
 #include "robot_fsm/stages/stage3_hay_states.hpp"
 
 // 一排稻草的掃描線（world frame）。起點 / 終點都從 named_poses.yaml 讀：
 //   stage3_row{i}_start : 掃描線起點（第四排同時是 Nav2 導航目標）；掃完後沿中線倒車退回這裡
 //   stage3_row{i}_end   : 掃描線終點，用來算方向與「到排尾了沒」。
-//   stage3_place        : 放置點（絕對點），夠 6 捲後 Nav2 導航到這裡放置（不在這裡讀，直接給 navigation_server）
+//   stage3_place        : 放置點，依 /robot_pose 閉迴路控速到位並對準車頭
 // 4 排都朝同一個方向掃（不是蛇行），順序 4 -> 3 -> 2 -> 1。rows_[0] = 第一排 ... rows_[3] = 第四排。
 struct Stage3Row
 {
@@ -35,6 +34,7 @@ class Stage3HayFSM
 public:
   explicit Stage3HayFSM(std::shared_ptr<RobotContext> ctx);
 
+  void start_motion_test();  // DIT-only movement test, bypass STM and mechanism states
   bool tick();  // true = 整關完成, false = 尚未完成
 
 private:
@@ -58,7 +58,8 @@ private:
 
   // 導航到指定 named pose（tick-based 非阻塞，失敗自動退避重送，做法同
   // MissionController::transition_to_named_pose）。
-  bool navigate_to_named_pose(const std::string& target_name, float timeout_sec);
+  bool navigate_to_named_pose(
+    const std::string& target_name, float timeout_sec, bool continue_on_timeout = false);
 
   // 從 named_poses.yaml 讀 stage3_row{i}_start / _end
   void load_rows();
@@ -73,7 +74,9 @@ private:
   bool tick_backoff();
   bool tick_row_shift();
   bool tick_row_return();
-  bool tick_spin_180();
+  bool hold_return_for_pick();
+  bool tick_cross_ramp();
+  void update_cross_ramp();
 
   // 位置投影到這排的掃描線：progress = 沿排進度（m），offset = 偏離中線（m，> 0 = 在中線左側）
   static void row_frame(const Stage3Row& row, double x, double y, double& progress, double& offset);
@@ -82,9 +85,10 @@ private:
 
   // STM 的 pick_count 已經 >= kPlaceAtPickCount（status 過期 = 不算）
   bool pick_target_reached();
-  // 停車，進 SPIN_180 準備去放置
+  // 停車，等待最後一次夾取後經由轉向點去放置
   void start_go_to_place(const char* from_state);
 
+  std::unique_ptr<DirectTransition> place_transition_;
   std::shared_ptr<RobotContext> ctx_;
   Stage3State state_;
   int tick_count_;
@@ -95,6 +99,8 @@ private:
   std::vector<Stage3Row> rows_;
   bool rows_valid_;
   size_t row_idx_;
+  std::vector<size_t> row_order_;
+  size_t row_order_pos_ = 0;
   rclcpp::Time row_start_time_;
   int empty_ticks_;                          // 連續「畫面裡完全沒有稻草」的 tick 數
   std::optional<rclcpp::Time> switch_release_time_;  // 人工模式：WAIT_PICK 中開關放開的時間
@@ -103,7 +109,9 @@ private:
   bool pick_started_;              // 這次 WAIT_PICK 中 STM 有沒有開始夾（PICKING 或 pick_count 增加）
   int backoff_count_;              // 同一捲連續 BACKOFF 重撞次數，STM 開始夾就歸零
   std::optional<rclcpp::Time> backoff_release_time_;  // BACKOFF 中開關放開的時間
-  bool place_stm_idle_;            // SPIN_180：已經等到 STM 不再 PICKING
+  bool return_after_pick_ = false;  // late pick at row end/while returning: resume return, not sweep
+  bool timed_return_pending_ = false;  // <40 s: stop collecting, finish active pick, then place
+  bool place_stm_idle_;            // 已經等到 STM 不再 PICKING
   std::optional<rclcpp::Time> shift_settle_start_;  // ROW_SHIFT：誤差進入容許範圍的時間
   // SWEEP：相機看到本排下一捲（valid + has_depth + 橫向在閘門內）就鎖住，
   // 直到碰到開關（WAIT_PICK）或換排。distance_m 含 z 不是沿排距離，不拿來判斷。
@@ -125,7 +133,7 @@ private:
   static constexpr double kMechInitWaitAfterSecondSec = 6.0;
 
   // S3_CROSS：衝過田埂
-  static constexpr double kCrossDurationSec = 1.5;
+  static constexpr double kCrossDurationSec = 2.0;
   static constexpr double kCrossLinearX = 0.6;
   static constexpr double kCrossLinearY = 0.0;
   static constexpr double kCrossAngularZ = 0.0;
@@ -133,8 +141,8 @@ private:
   static constexpr double kCrossPublishHz = 20.0;
 
   // S3_SWEEP：速度（m/s, rad/s）
-  static constexpr double kSweepFastSpeed = 0.33;   // 前方沒有本排稻草 / 還很遠
-  static constexpr double kSweepSlowSpeed = 0.15;   // 對準後靠上去的速度
+  static constexpr double kSweepFastSpeed = 0.4;   // 前方沒有本排稻草 / 還很遠
+  static constexpr double kSweepSlowSpeed = 0.18;   // 對準後靠上去的速度
   static constexpr double kAlignTolM = 0.01;        // 對準完成
   static constexpr double kAlignResumeTolM = 0.04;  // 前進中誤差超過這個就停下來重新對
   static constexpr double kMinAlignLateralSpeed = 0.08;  // 對準時橫移最低速度，太小底盤不動
@@ -148,17 +156,8 @@ private:
 
   static constexpr double kCamLateralGateM = 0.15;
 
-  // S3_SWEEP：排尾後面的稻草不認（第四排最後面有 5 捲平放當基底，不能夾）。
-  // 算「開關碰到這捲時的沿排進度」= progress + position_m.z - kCamToSwitchM，
-  // 超過 row.length + kRowEndCamMarginM 就當沒看到。
-  //   kCamToSwitchM：相機深度 z 減掉這個 = 開關前緣到稻草的距離。量法：稻草放在開關前緣正前方
-  //                  已知距離 d（例如 0.5 m），echo /straw/target 看 position_m.z，填 z - d
-  //   kRowEndCamMarginM：容許「算出來超過排尾」多少還算本排的稻草。最後一個格點的稻草理論上算出來 = 0，
-  //                      但深度 / 定位 / 排尾點量測有誤差，所以要大於誤差才不會被丟掉；
-  //                      base 算出來 ≈ 最後一個格點稻草到 base 的距離，要小於這個距離才擋得掉 base。
-  //                      取兩者中間（約一半）最穩
   static constexpr double kCamToSwitchM = 0.0;  // 相機與極限開關前後幾乎持平
-  static constexpr double kRowEndCamMarginM = 0.1;
+  static constexpr double kRowEndCamMarginM = 0.3;
 
   // S3_SWEEP：排結束條件
   static constexpr bool kEnableEmptyRowExit = false;  // 前方完全看不到稻草就提早換排（最後一排不適用）
@@ -168,18 +167,18 @@ private:
   // S3_SWEEP / S3_WAIT_PICK：第四排超過排尾這麼多就立即返回（不管開關），留一點給最後一個格點的稻草
   static constexpr double kRow4EndOvershootM = 0.03;
 
-  // S3_ROW_RETURN：沿中線倒車回排頭，速度 kSweepFastSpeed，剩 kRowReturnSlowZoneM 內降到 kSweepSlowSpeed；
-  // 橫向 / 角度用 kLineLateralGain / kYawGain 鎖中線與車頭方向。超時也照樣往下走（比賽中不卡住）
-  static constexpr double kRowReturnSlowZoneM = 0.2;
+  // S3_ROW_RETURN：沿中線倒車回排頭，速度由 YAML stage3_row_return_speed 控制；
+  // 剩 kRowReturnSlowZoneM 內使用獨立的 stage3_row_return_slow_speed。
+  static constexpr double kRowReturnSlowZoneM = 0.35;
   static constexpr double kRowReturnTimeoutSec = 20.0;
 
-  // S3_ROW_SHIFT：保持車頭方向橫移到這排中線（速度 kMinAlignLateralSpeed ~ kMaxLateralSpeed），
+  // S3_ROW_SHIFT：保持車頭方向橫移到這排中線（速度上限由 YAML stage3_row_shift_max_speed 控制），
   // 停車後連續 kRowShiftSettleSec 都在 kRowShiftTolM 內才開始掃。超時也照樣開始掃
   static constexpr double kRowShiftTolM = 0.02;
   static constexpr double kRowShiftSettleSec = 0.3;
   static constexpr double kRowShiftTimeoutSec = 10.0;
 
-  static constexpr double kPickWaitSec = 13.0;
+  static constexpr double kPickWaitSec = 12.5;
   // S3_SWEEP：上一捲還在 PICKING（還沒放好）時，相機看到本排下一捲就停車等 STM 回 IDLE，
   // 避免 PICKING 期間壓到開關（STM 要開關先放開才會再夾）
   static constexpr double kManualResumeDelaySec = 1.5;
@@ -191,20 +190,18 @@ private:
   static constexpr double kBackoffMaxSec = 3.0;      // 退這麼久開關還是壓著就放棄這次，回 SWEEP
   static constexpr int kBackoffMaxRetries = 3;       // 同一捲重撞幾次 STM 都沒夾就結束這排
 
-  // S3_SPIN_180：等 STM 不再 PICKING 後，用 Nav2 behavior_server 的 spin 原地轉 180°（正 = 逆時針）。
-  // 失敗隔 kNavBackoffTicks 重送，連續失敗 kSpinMaxRetries 次就不轉了，直接往下走（比賽中不卡住）
-  static constexpr double kSpinTargetYaw = M_PI;
-  static constexpr double kSpinTimeAllowanceSec = 15.0;
-  static constexpr int kSpinMaxRetries = 3;
+  // 掃排與返回的縱向加減速限制（m/s²）；安全停車仍立即送零。
+  static constexpr double kRowAccel = 0.50;
+  static constexpr double kRowDecel = 0.70;
+  double row_last_vx_ = 0.0;
+  std::optional<std::chrono::steady_clock::time_point> row_last_update_;
+  bool place_approach_reached_ = false;
+  static constexpr const char* kPlaceApproachPose = "stage3_place_approach";
 
-  // S3_FORWARD：轉完後發 /cmd_vel 往機器 +x 前進 kForwardLinearX * kForwardDurationSec（20 cm）
-  static constexpr double kForwardLinearX = 0.1;
-  static constexpr double kForwardDurationSec = 1.0;
-
-  // S3_NAV_TO_PLACE -> S3_PLACE：Nav2 到放置點後送放置指令，固定等待後結束本關。
+  // S3_NAV_TO_PLACE：先到轉向點，再到放置點。
   static constexpr const char* kPlacePose = "stage3_place";
   static constexpr uint16_t kCmdPlaceStraw = 9990;
-  static constexpr double kPlaceWaitSec = 7.0;
+  static constexpr double kPlaceWaitSec = 10.0;
 
   // 資料過期門檻
   static constexpr double kPoseStaleSec = 0.5;
@@ -221,8 +218,17 @@ private:
 
   // S3_AFTER_PlACE: 退回 60 cm，再送 kCmdAfterPlace
   static constexpr double MoveBackDuration = 2.0;
-  static constexpr double MoveBackLinearX = 0.3;
+  static constexpr double MoveBackLinearX = 0.2;
   static constexpr uint16_t kCmdAfterPlace = 9991;
+
+  // CROSS timer runs via spin_some at 20 Hz without blocking localization callbacks.
+  rclcpp::TimerBase::SharedPtr cross_timer_;
+  std::optional<Pose2D> cross_start_pose_;
+  std::chrono::steady_clock::time_point cross_started_;
+  std::chrono::steady_clock::time_point cross_last_update_;
+  std::optional<std::chrono::steady_clock::time_point> cross_cruise_started_;
+  double cross_last_speed_ = 0.0;
+  bool cross_done_ = false;
 
   // ---- navigation bookkeeping ----
   bool nav_goal_sent_;
@@ -235,12 +241,4 @@ private:
   static constexpr int kNavBackoffTicks = 20;
   static constexpr int kNavMaxRetryWarn = 3;
 
-  // ---- spin bookkeeping（S3_SPIN_180）----
-  using SpinAction = nav2_msgs::action::Spin;
-  rclcpp_action::Client<SpinAction>::SharedPtr spin_client_;
-  bool spin_goal_sent_;
-  bool spin_done_;
-  bool spin_success_;
-  int spin_fail_count_;
-  int spin_backoff_ticks_;
 };

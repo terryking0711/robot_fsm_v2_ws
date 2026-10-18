@@ -10,7 +10,10 @@
 # world_to_map 擺到 world 上，跟 Nav2 實際用的轉換一樣。
 
 import argparse
+import math
 import os
+import re
+from pathlib import Path
 import sys
 
 import yaml
@@ -33,6 +36,94 @@ def load_map(map_yaml, ws_root):
     return img, float(m['resolution']), m['origin']
 
 
+def fsm_trajectories(side, poses, full_arm=False):
+    """名目軌跡：車體速度旋轉到 world；讀目前 src 常數，不代表實測路徑。"""
+    workspace = Path(__file__).resolve().parents[3]
+    headers = workspace / 'src/robot_fsm/include/robot_fsm/stages'
+    def constants(filename):
+        text = (headers / filename).read_text()
+        return {name: float(value) for name, value in re.findall(
+            r'constexpr double\s+(\w+)\s*=\s*([-+0-9.eE]+)\s*;', text)}
+    s2 = constants('stage2_clam_fsm.hpp')
+    s3 = constants('stage3_hay_fsm.hpp')
+    with open(os.path.join(side['ws_root'], 'field_config.yaml')) as f:
+        config = yaml.safe_load(f)['sides'][side['side']]
+    with open(remap_path(config['fsm_side_file'], side['ws_root'])) as f:
+        sign = float(yaml.safe_load(f).get('stage2_push_clam_x_sign', 1.0))
+    points = {p[0]: p[1:4] for p in poses}
+    paths = []
+    def timed(name, start, vx, vy, duration):
+        x, y, yaw = start
+        dx = duration * (vx * math.cos(yaw) - vy * math.sin(yaw))
+        dy = duration * (vx * math.sin(yaw) + vy * math.cos(yaw))
+        end = (x + dx, y + dy, yaw)
+        distance = math.hypot(dx, dy)
+        paths.append((name, start, end,
+                      f'{distance:.2f} m; vx={vx:g}, vy={vy:g}; {duration:g} s', False))
+        return end
+    push_end = timed('S2_PUSH_CLAM', points['stage2_entry'],
+                     s2['kPushClamLinearX'] * sign, s2['kPushClamLinearY'],
+                     s2['kPushClamDurationSec'])
+    if full_arm:
+        timed('S2_ALLIGN_LOCK', points['stage2_move_forward_align'],
+              s2['kAlignLockLinearX'], s2['kAlignLockLinearY'],
+              s2['kAlignLockDurationSec'])
+    else:
+        timed('S2_SHIFT_TO_RETURN (after LIFT_ARM)', push_end, 0.0,
+              s2['kShiftToReturnLinearY'], s2['kShiftToReturnDurationSec'])
+    timed('S3_CROSS', points['stage3_entry'], s3['kCrossLinearX'],
+          s3['kCrossLinearY'], s3['kCrossDurationSec'])
+    timed('S3_AFTER_PLACE', points['stage3_place'], s3['MoveBackLinearX'],
+          0.0, s3['MoveBackDuration'])
+    # 掃描／退回／換排是感知閉迴路；畫參考線，不當作固定速度積分。
+    for row in range(4, 0, -1):
+        start, end = points[f'stage3_row{row}_start'], points[f'stage3_row{row}_end']
+        length = math.hypot(end[0] - start[0], end[1] - start[1])
+        paths.append((f'S3_SWEEP row{row}', start, end,
+                      f'{length:.2f} m ref.; vx={s3["kSweepFastSpeed"]:g}/{s3["kSweepSlowSpeed"]:g}', True))
+    notes = ('NAV_TO_PLACE: stage3_place_approach (turn 180 deg) -> stage3_place.\n'
+             'ROW_RETURN: reverse along row; ROW_SHIFT: lateral to next row.\n'
+             'BACKOFF: sensor-dependent; no fixed length. Solid = timed nominal; dashed = row reference.')
+    return paths, notes
+
+
+def draw_trajectories(ax, paths):
+    renderer = ax.figure.canvas.get_renderer()
+    obstacles = [artist.get_window_extent(renderer) for artist in ax.texts
+                 if artist.get_bbox_patch() is not None]
+    frame = ax.get_window_extent(renderer)
+    for name, start, end, detail, reference in paths:
+        color = 'seagreen' if reference else 'purple'
+        ax.annotate('', xy=end[:2], xytext=start[:2],
+                    arrowprops=dict(arrowstyle='-|>', color=color, lw=2,
+                                    linestyle='--' if reference else '-', mutation_scale=14),
+                    zorder=5)
+        midpoint = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+        best = None
+        for ox, oy, ha, va in LABEL_CANDIDATES:
+            ann = ax.annotate(f'{name}\n{detail}', midpoint,
+                              xytext=(ox, oy), textcoords='offset points', ha=ha, va=va,
+                              fontsize=7, color=color,
+                              bbox=dict(fc='white', ec=color, alpha=0.85, boxstyle='round,pad=0.2'),
+                              arrowprops=dict(arrowstyle='-', color=color, lw=0.6), zorder=6)
+            ann.get_window_extent(renderer)
+            box = ann.get_bbox_patch().get_window_extent(renderer)
+            def intersection(other):
+                return (max(0, min(box.x1, other.x1) - max(box.x0, other.x0)) *
+                        max(0, min(box.y1, other.y1) - max(box.y0, other.y0)))
+            cost = sum(intersection(o) for o in obstacles)
+            cost += 10 * (box.width * box.height - intersection(frame))
+            if best is None or cost < best[0]:
+                if best is not None:
+                    best[1].remove()
+                best = (cost, ann, box)
+            else:
+                ann.remove()
+            if cost == 0:
+                break
+        obstacles.append(best[2])
+
+
 # 標籤候選位置（offset points, ha, va），依序嘗試，選第一個不跟其他標籤 / 點重疊的
 LABEL_CANDIDATES = [(6, 6, 'left', 'bottom'), (6, -6, 'left', 'top'),
                     (-6, 6, 'right', 'bottom'), (-6, -6, 'right', 'top'),
@@ -43,7 +134,7 @@ LABEL_CANDIDATES = [(6, 6, 'left', 'bottom'), (6, -6, 'left', 'top'),
                     (-20, 55, 'right', 'bottom'), (-20, -55, 'right', 'top')]
 
 
-def place_labels(ax, groups):
+def place_labels(ax, groups, yaw_by_name):
     renderer = ax.figure.canvas.get_renderer()
     obstacles = []
     for x, y, members in groups:
@@ -63,7 +154,9 @@ def place_labels(ax, groups):
         return sum(area(b, o) for o in obstacles) + 10 * outside
 
     for x, y, members in groups:
-        text = '\n'.join(f'{name} ({px:.2f}, {py:.2f})' for name, px, py in members)
+        text = '\n'.join(
+            f'{name} ({px:.2f}, {py:.2f}), yaw={yaw_by_name[name]:.3f} rad'
+            for name, px, py in members)
         best = None
         for ox, oy, ha, va in LABEL_CANDIDATES:
             ann = ax.annotate(text, (x, y), xytext=(ox, oy), textcoords='offset points',
@@ -94,6 +187,7 @@ def plot_side(side_name, args):
     for e in errors:
         print(f'[{side_name}] ERROR: {e}', file=sys.stderr)
 
+    paths, trajectory_notes = fsm_trajectories(side, poses, args.stage2_arm)
     w2m = side['world_to_map']
     # 地圖像素 -> map frame（map yaml origin）-> world frame（world_to_map）
     map_to_world = (Affine2D()
@@ -109,6 +203,8 @@ def plot_side(side_name, args):
     # 顯示範圍：預設是所有點位 + 原點外擴 margin；--full-map 則包含整張地圖
     xs = [p[1] for p in poses] + [0.0]
     ys = [p[2] for p in poses] + [0.0]
+    xs += [point[0] for path in paths for point in (path[1], path[2])]
+    ys += [point[1] for path in paths for point in (path[1], path[2])]
     margin = args.margin
     if args.full_map:
         corners = map_to_world.transform([(0, 0), (width, 0), (0, height), (width, height)])
@@ -136,12 +232,20 @@ def plot_side(side_name, args):
     ax.set_title(f"{side_name}: {os.path.basename(side['map_yaml'])} + "
                  f"{os.path.basename(side['named_poses_file'])}\n"
                  f"world_to_map = ({w2m['x']}, {w2m['y']}, yaw {w2m['yaw']})", fontsize=10)
-    fig.tight_layout()
+    fig.text(0.02, 0.01, trajectory_notes, fontsize=7)
+    fig.tight_layout(rect=(0, 0.065, 1, 1))
 
     # 點位：每個點畫一個圓點，靠很近的點合併成一個標籤
-    for _name, x, y, _yaw, _rel in poses:
+    for _name, x, y, yaw, _rel in poses:
+        # yaw 已解析為 world frame：0 朝 +x，正角度逆時針。
+        ax.annotate('', xy=(x + args.yaw_length * math.cos(yaw),
+                            y + args.yaw_length * math.sin(yaw)),
+                    xytext=(x, y),
+                    arrowprops=dict(arrowstyle='-|>', color='dodgerblue',
+                                    lw=1.5, mutation_scale=12), zorder=4)
         ax.plot(x, y, 'o', color='darkorange', markersize=6, markeredgecolor='black')
-    place_labels(ax, group_coincident(poses))
+    place_labels(ax, group_coincident(poses), {p[0]: p[3] for p in poses})
+    draw_trajectories(ax, paths)
 
 
     if args.show:
@@ -163,6 +267,10 @@ def main():
     parser.add_argument('--full-map', action='store_true', help='顯示整張地圖（預設只放大到點位附近）')
     parser.add_argument('--margin', type=float, default=1.5, help='點位外擴的顯示範圍（m）')
     parser.add_argument('--axis-length', type=float, default=1.0, help='原點 x/y 軸長度（m）')
+    parser.add_argument('--yaw-length', type=float, default=0.3,
+                        help='點位 yaw 方向箭頭長度（m，預設0.3）')
+    parser.add_argument('--stage2-arm', action='store_true',
+                        help='畫完整 arm 第二關（預設 skip_stage2_arm=true 縮減流程）')
     parser.add_argument('--size', type=float, default=12, help='圖片邊長（inch）')
     parser.add_argument('--dpi', type=int, default=150)
     args = parser.parse_args()

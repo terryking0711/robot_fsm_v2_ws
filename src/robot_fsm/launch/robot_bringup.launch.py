@@ -21,10 +21,9 @@
 #   直接從目前位置 Nav2 到 stage3_entry 再跑第三關）：
 #     ros2 launch robot_fsm robot_bringup.launch.py field_side:=dit only_stage3:=true
 #
-#   第三關重置（panel RESET 按鈕經 fsm_launcher /fsm/reset_stage3 呼叫，機器人已放在
-#   reset_pose_stage3）：在 reset_pose_stage3 重建 cartographer trajectory，
-#   不等開始訊號直接 Nav2 到 stage3_entry 跑第三關：
-#     ros2 launch robot_fsm robot_bringup.launch.py field_side:=normal reset_stage3:=true
+#   RESET：保持現有定位與截止時間（截止時間由 fsm_launcher 傳入）。
+#     reset_stage2:=true -> 重跑第二關到第三關
+#     reset_stage3:=true -> DirectTransition 轉角 -> stage3_entry -> 第三關
 #
 #   機構單獨測試模式（導航關閉）：
 #     ros2 launch robot_fsm robot_bringup.launch.py enable_navigation:=false
@@ -86,10 +85,28 @@ def launch_side(context):
         raise RuntimeError(f"only_stage3 must be true / false, got '{only_stage3_arg}'")
     only_stage3 = only_stage3_arg == 'true'
 
+    motion_test_arg = LaunchConfiguration('stage3_motion_test').perform(context).strip().lower()
+    if motion_test_arg not in ('true', 'false'):
+        raise RuntimeError('stage3_motion_test must be true / false')
+    stage3_motion_test = motion_test_arg == 'true'
+    if stage3_motion_test and field_side != 'dit':
+        raise RuntimeError('stage3_motion_test requires field_side:=dit')
+
+    reset_stage2_arg = LaunchConfiguration('reset_stage2').perform(context).strip().lower()
+    if reset_stage2_arg not in ('true', 'false'):
+        raise RuntimeError(f"reset_stage2 must be true / false, got '{reset_stage2_arg}'")
+    reset_stage2 = reset_stage2_arg == 'true'
+
     reset_stage3_arg = LaunchConfiguration('reset_stage3').perform(context).strip().lower()
     if reset_stage3_arg not in ('true', 'false'):
         raise RuntimeError(f"reset_stage3 must be true / false, got '{reset_stage3_arg}'")
     reset_stage3 = reset_stage3_arg == 'true'
+    if stage3_motion_test and (reset_stage2 or reset_stage3):
+        raise RuntimeError('stage3_motion_test cannot be combined with RESET')
+    if reset_stage2 and reset_stage3:
+        raise RuntimeError('reset_stage2 and reset_stage3 are mutually exclusive')
+    if reset_stage2:
+        only_stage3, skip_stage2, skip_stage2_arm = False, False, True
 
     nav_pkg_share = get_package_share_directory('robot_navigation')
 
@@ -116,20 +133,25 @@ def launch_side(context):
             # 宣告成 bool 會丟 InvalidParameterTypeException。
             'enable_navigation': ParameterValue(enable_navigation, value_type=bool),
             'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+            'mirror_v2': ParameterValue(LaunchConfiguration('mirror_v2'), value_type=bool),
             'field_side': field_side,
+            'match_deadline_unix_sec': ParameterValue(
+                LaunchConfiguration('match_deadline_unix_sec'), value_type=float),
             'named_poses_file': side['named_poses_file'],
             'fsm_side_file': side['fsm_side_file'],
             'skip_stage2': skip_stage2,
             'skip_stage2_arm': skip_stage2_arm,
             'only_stage3': only_stage3,
+            'stage3_motion_test': stage3_motion_test,
+            'reset_stage2': reset_stage2,
             'reset_stage3': reset_stage3,
         }],
     )
 
     return [
         LogInfo(msg=f'[bringup] field_side = {field_side}, skip_stage2 = {skip_stage2}, '
-                    f'only_stage3 = {only_stage3}, reset_stage3 = {reset_stage3}'),
-        navigation_server,
+                    f'only_stage3 = {only_stage3}, reset_stage2 = {reset_stage2}, reset_stage3 = {reset_stage3}'),
+        *([] if stage3_motion_test else [navigation_server]),
         fsm_main,
     ]
 
@@ -165,6 +187,8 @@ def generate_launch_description():
             description='true = 送2101後直接到stage2_entry，保留第二段伸臂、推動、抬臂；'
                         '抬臂後直接到stage2_return_point收臂'
         ),
+        DeclareLaunchArgument('mirror_v2', default_value='false',
+                              description='Mirror V2: s3_entry_v2, rows 3 -> 1 -> 2'),
         DeclareLaunchArgument(
             'only_stage3',
             default_value='false',
@@ -172,10 +196,22 @@ def generate_launch_description():
                         '（不跑第二關）'
         ),
         DeclareLaunchArgument(
+            'stage3_motion_test', default_value='false',
+            description='DIT only: spin -> forward -> direct place -> stop, no mechanism commands'
+        ),
+        DeclareLaunchArgument(
+            'reset_stage2', default_value='false',
+            description='Rerun stage 2 -> stage 3, keep localization and supplied match deadline'
+        ),
+        DeclareLaunchArgument(
             'reset_stage3',
             default_value='false',
-            description='true = 第三關重置：在 reset_pose_stage3 重建 cartographer trajectory，'
-                        '不等開始訊號直接 Nav2 到 stage3_entry 跑第三關'
+            description='true = 保留定位，DirectTransition 到轉角再到 stage3_entry 跑第三關'
+        ),
+        DeclareLaunchArgument(
+            'match_deadline_unix_sec',
+            default_value='0.0',
+            description='START NORMAL / MIRROR absolute match deadline; 0 disables the match timer'
         ),
         DeclareLaunchArgument(
             'field_config_file',

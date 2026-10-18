@@ -88,14 +88,6 @@ bool MissionController::self_check()
     return false;
   }
 
-  if (ctx_->reset_stage3 &&
-    ctx_->field_poses.find("reset_stage3") == ctx_->field_poses.end())
-  {
-    RCLCPP_ERROR(
-      ctx_->node->get_logger(),
-      "[Mission] field_poses missing 'reset_stage3', check named_poses yaml");
-    return false;
-  }
 
   RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] self check passed");
   return true;
@@ -137,6 +129,7 @@ void MissionController::publish_mechanism_command(
   const std::string& state_name,
   const std::string& action_name)
 {
+  if (ctx_->stage3_motion_test) { return; }
   robot_interfaces::msg::MechanismCommand msg;
   msg.command_id = ctx_->side_command_id(command_id);
   msg.command_name = action_name;
@@ -385,7 +378,8 @@ LocalizeResult MissionController::localize_at(const Pose2D& target_world)
 
 bool MissionController::transition_to_named_pose(
   const std::string& target_name,
-  float timeout_sec)
+  float timeout_sec,
+  bool continue_on_timeout)
 {
   // ---- 導航總開關（RobotContext::enable_navigation）----
   // false 時不送 goal，直接視為已抵達，讓機構流程可以在沒有
@@ -502,12 +496,22 @@ bool MissionController::transition_to_named_pose(
     return false;
   }
 
-  const bool result = nav_success_;
+  // navigation_server requests Nav2 goal cancellation before reporting this timeout.
+  // Stage 2 / 3 entries opt into continuing after timeout; other failures still retry.
+  const bool timed_out =
+    !nav_success_ && nav_message_.rfind("NavigateToNamedPose timeout after ", 0) == 0;
+  const bool result = nav_success_ || (continue_on_timeout && timed_out);
+  if (continue_on_timeout && timed_out) {
+    RCLCPP_WARN(
+      ctx_->node->get_logger(),
+      "[Mission] navigation to '%s' timed out after %.1f s; navigation stopped, continue to next state",
+      nav_active_target_.c_str(), timeout_sec);
+  }
 
   if (result) {
     RCLCPP_INFO(
       ctx_->node->get_logger(),
-      "[Mission] navigation to '%s' complete",
+      "[Mission] navigation to '%s' finished",
       nav_active_target_.c_str());
 
     nav_retry_count_ = 0;
@@ -545,6 +549,26 @@ bool MissionController::transition_to_named_pose(
   return result;
 }
 
+bool MissionController::transition_to_entry(const std::string& target_name, float timeout_sec)
+{
+  const bool mirror_motion = ctx_->reset_stage2 || ctx_->reset_stage3 ||
+    ctx_->field_side == "mirror" ||
+    (ctx_->field_side == "dit" && target_name == "stage3_entry");
+  if (!mirror_motion) {
+    return transition_to_named_pose(target_name, timeout_sec, true);
+  }
+  if (!direct_transition_) { direct_transition_ = std::make_unique<DirectTransition>(ctx_); }
+  DirectTransition::Options options;
+  options.max_speed = 0.4;
+  options.min_speed = 0.05;
+  options.require_yaw = true;
+  options.xy_tolerance = 0.04;
+  options.yaw_tolerance = 2.5 * M_PI / 180.0;
+  options.settle_cycles = 3;
+  options.continue_on_timeout = true;
+  return direct_transition_->tick(target_name, timeout_sec, options);
+}
+
 bool MissionController::finish_decision()
 {
   RCLCPP_INFO(ctx_->node->get_logger(), "[Mission] FINISH_DECISION");
@@ -553,6 +577,10 @@ bool MissionController::finish_decision()
 
 void MissionController::tick()
 {
+  if (ctx_->direct_transition_failed) {
+    state_ = MissionState::SAFE_STOP;
+    ctx_->cmd_vel_pub->publish(geometry_msgs::msg::Twist());
+  }
   switch (state_) {
 
     case MissionState::BOOT:
@@ -571,9 +599,17 @@ void MissionController::tick()
     case MissionState::SELF_CHECK:
       if (self_check()) {
         reset_localize_bookkeeping();
-        // reset_stage3（panel RESET）：機器人已放在 reset_pose_stage3，
-        // 重建 cartographer trajectory 後直接去 stage3_entry，不等開始訊號
-        state_ = ctx_->reset_stage3 ? MissionState::RELOCALIZE : MissionState::LOCALIZE;
+        // Both RESET paths preserve the current trajectory and bypass WAIT_START.
+        if (ctx_->stage3_motion_test) {
+          stage3_fsm_->start_motion_test();
+          state_ = MissionState::STAGE3_HAY;
+        } else if (ctx_->reset_stage3) {
+          state_ = MissionState::TRANSITION_TO_STAGE3_CORNER;
+        } else if (ctx_->reset_stage2) {
+          state_ = MissionState::STAGE2_PREPARE;
+        } else {
+          state_ = MissionState::LOCALIZE;
+        }
       } else {
         state_ = MissionState::SAFE_STOP;
       }
@@ -608,7 +644,7 @@ void MissionController::tick()
     //   break;
 
     case MissionState::TRANSITION_TO_STAGE2:
-      if (transition_to_named_pose("stage2_entry", 30.0)) {
+      if (transition_to_entry("stage2_entry", 8.0)) {
         state_ = MissionState::STAGE2_CLAM;
       }
       break;
@@ -620,13 +656,18 @@ void MissionController::tick()
       break;
 
     case MissionState::TRANSITION_TO_STAGE3_CORNER:
-      if (transition_to_named_pose("stage2_to_stage3_corner", 50.0)) {
+      if (ctx_->reset_stage3 || ctx_->skip_stage2_arm) {
+        if (!direct_transition_) { direct_transition_ = std::make_unique<DirectTransition>(ctx_); }
+        if (direct_transition_->tick("stage2_to_stage3_corner", 20.0)) {
+          state_ = MissionState::TRANSITION_TO_STAGE3;
+        }
+      } else if (transition_to_named_pose("stage2_to_stage3_corner", 50.0)) {
         state_ = MissionState::TRANSITION_TO_STAGE3;
       }
       break;
 
     case MissionState::TRANSITION_TO_STAGE3:
-      if (transition_to_named_pose("stage3_entry", 50.0)) {
+      if (transition_to_entry(ctx_->mirror_v2 ? "s3_entry_v2" : "stage3_entry", 11.0)) {
         state_ = MissionState::STAGE3_HAY;
       }
       break;

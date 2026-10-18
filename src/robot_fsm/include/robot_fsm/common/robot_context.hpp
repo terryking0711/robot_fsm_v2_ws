@@ -1,9 +1,11 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -44,18 +46,29 @@ struct RobotContext
   //           FSM 只跑機構流程。用於單獨測試機構。
   // 只在啟動時讀一次，執行中不會變動。
   bool enable_navigation = true;
+  bool direct_transition_failed = false;  // 直接控速超時／錯誤後鎖住停車
 
   // ---- 略過第二關 ----
   // 由 main.cpp 從 ROS parameter "skip_stage2" 載入（field_config.yaml 該 side 的
   // skip_stage2，DIT 自己場地測試用）。true 時 WAIT_START 之後直接
   // TRANSITION_TO_STAGE3（導航到 stage3_entry），整個 STAGE2_CLAM 不跑。
   bool skip_stage2 = false;
+  bool mirror_v2 = false;  // independent mirror route: rows 3 -> 1 -> 2
 
   // ---- 第二關關閉手臂 state ----
   // 由 main.cpp 從 ROS parameter "skip_stage2_arm" 載入（robot_bringup.launch.py skip_stage2_arm:=true）。
   // true 時先送 2101 等 1 秒，導航到共用 stage2_entry，再跑 EXTEND_ARM_2 -> PUSH_CLAM -> LIFT_ARM ->
-  // MOVE_TO_RETURN（導航到 stage2_return_point）-> RETRACT_ARM_1 -> RETRACT_ARM_2 -> DONE。
+  // SHIFT_TO_RETURN -> RETRACT_ARM_1 -> RETRACT_ARM_2 -> MOVE_TO_RETURN（直接控速）-> DONE。
   bool skip_stage2_arm = false;
+  double stage2_shift_to_return_velocity_y = -0.267;
+  double stage2_shift_to_return_duration_sec = 1.7;
+  double stage3_cross_accel_distance = 0.0;  // mirror enables distance-based ramp
+  double stage3_cross_max_speed = 0.6;
+  double stage3_cross_cruise_duration_sec = 2.0;
+  double stage3_cross_timeout_sec = 10.0;
+  double stage3_row_return_speed = 0.42;
+  double stage3_row_return_slow_speed = 0.25;
+  double stage3_row_shift_max_speed = 0.16;  // independent row-change lateral speed cap (m/s)
 
   // ---- 只跑第三關 ----
   // 由 main.cpp 從 ROS parameter "only_stage3" 載入（robot_bringup.launch.py only_stage3:=true）。
@@ -63,11 +76,10 @@ struct RobotContext
   //（Nav2 到 stage3_entry）再跑 STAGE3_HAY。
   bool only_stage3 = false;
 
-  // ---- 第三關重置 ----
-  // 由 main.cpp 從 ROS parameter "reset_stage3" 載入（panel RESET -> fsm_launcher
-  // /fsm/reset_stage3 先停掉舊的 robot_fsm_main，再以 reset_stage3:=true 重新 launch）。
-  // true 時 SELF_CHECK 之後走 RELOCALIZE：在 reset_pose_stage3 重建 cartographer trajectory，
-  // 不等開始訊號直接 TRANSITION_TO_STAGE3（Nav2 到 stage3_entry）再跑 STAGE3_HAY。
+  // RESET keeps localization and the match deadline. S2 reruns preparation;
+  // S3 directly drives through the stage 2 -> stage 3 corner into stage 3.
+  bool stage3_motion_test = false;  // DIT: spin -> forward -> direct place, no mechanism commands
+  bool reset_stage2 = false;
   bool reset_stage3 = false;
 
   // Navigation
@@ -137,6 +149,18 @@ struct RobotContext
   rclcpp::Time latest_straw_target_time{0, 0, RCL_ROS_TIME};
   std::optional<robot_interfaces::msg::StrawPickStatus> latest_straw_pick_status;
   rclcpp::Time latest_straw_pick_status_time{0, 0, RCL_ROS_TIME};
+
+  // START NORMAL / MIRROR supplies an absolute deadline, converted once to a steady clock.
+  // Keep counting while waiting, navigating, and picking; ROS /clock cannot pause it.
+  std::optional<std::chrono::steady_clock::time_point> match_deadline;
+  static constexpr double kStage3ReturnReserveSec = 40.0;
+
+  double match_remaining_sec() const
+  {
+    return match_deadline
+      ? std::chrono::duration<double>(*match_deadline - std::chrono::steady_clock::now()).count()
+      : std::numeric_limits<double>::infinity();
+  }
 
   // Mission flags
   bool start_signal = false;

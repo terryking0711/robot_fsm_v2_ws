@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -71,12 +72,17 @@ private:
   // 回傳 true = x / y / yaw 都收斂到容許誤差內。
   bool fine_align(
     const std::shared_ptr<NavigateToNamedPoseGoalHandle> goal_handle,
-    const NamedPose2D & target);
+    const NamedPose2D & target,
+    const std::chrono::steady_clock::time_point & deadline);
+
+  void hold_stop();
+  void cancel_nav2_and_stop(const NavigateToPoseGoalHandle::SharedPtr & nav_goal_handle);
 
   rclcpp_action::Server<NavigateToNamedPose>::SharedPtr action_server_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav2_client_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reload_srv_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr fine_cmd_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr stop_cmd_pub_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
