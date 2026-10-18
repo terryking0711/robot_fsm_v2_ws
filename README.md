@@ -230,3 +230,180 @@ graph TD
 | `/fsm/reset_stage2`、`/fsm/reset_stage3` | `std_srvs/srv/Trigger` | 保留定位、倒數與路線選擇，重啟指定關卡 |
 
 修改 YAML 後需讓對應節點重新載入；named poses 可使用重載 service，FSM 控制參數通常需重啟 FSM。`mirror_spin_speed_scale` 由 Nav2 啟動時讀取，因此修改後需重啟導航。修改 C++ 則需重新建置。
+
+## 6. 完整整合架構與資料流
+
+以下展開實機使用的 **Cartographer 定位模式**，涵蓋 `tdk_slam_ws`、`robot_fsm_v2_ws`、`robot_panel_ui`，以及必要的視覺、通訊與硬體。實線為資料／操作流，虛線為設定載入、程序管理或保留介面；節點代表邏輯功能，不一定是獨立程序。建圖與其他定位模式不會與圖中定位流程全部同時執行。
+
+```mermaid
+flowchart TB
+    subgraph CONFIG["共用設定與啟動：tdk_robot_docker"]
+        FIELD["field_config.yaml<br/>場地、地圖、world→map、點位與控制設定路徑"]
+        START["start.sh / 桌面 Loc 啟動入口<br/>ROS_DOMAIN_ID=30"]
+        MAPFILES["地圖檔<br/>pbstream + YAML / PGM"]
+        POSES["named_poses_normal / mirror / dit.yaml"]
+        CTRL["fsm_side_normal / mirror.yaml<br/>控速、容差、指令映射與 spin 倍率"]
+    end
+
+    subgraph WEB["robot_panel_ui：瀏覽器"]
+        PAGE["index.html / style.css / app.js<br/>本機 file 或 HTTP :8000"]
+        BUTTON["START NORMAL / MIRROR / MIRROR V2 / DIT<br/>STOP / RESET S2 / RESET S3"]
+        LIGHT["SYSTEM / DEVICE / ROBOT STATE<br/>訊息新鮮度、topic / node 存在、組合條件"]
+        DISPLAY["主機電量、功率、剩餘時間<br/>比賽倒數"]
+        LINK["ROBOT PANEL 外連"]
+        PAGE --> BUTTON & LIGHT & DISPLAY & LINK
+    end
+
+    subgraph ACCESS["通訊與開發服務：配套容器"]
+        ROSBR["rosbridge_websocket :9090<br/>topics / services / rosapi graph 查詢"]
+        AGENT["micro-ROS Agents<br/>上位機 ROS 2 ↔ STM32"]
+        FOX["foxglove_bridge :8767"]
+        VIEW["Foxglove / Lichtblick :8080<br/>3D 地圖、TF、位姿、點位與訊息檢視"]
+    end
+
+    subgraph FSMWS["robot_fsm_v2_ws"]
+        subgraph PANELPKG["robot_panel_bridge"]
+            LAUNCHER["fsm_launcher<br/>場地檢查、啟停程序、保留路線與 deadline"]
+            TIMER["比賽剩餘秒數<br/>START 設定期限；STOP / RESET 保留"]
+            BAT["battery_monitor<br/>讀取主機 /sys/class/power_supply"]
+        end
+        subgraph FSMPKG["robot_fsm：robot_fsm_main"]
+            CALLBACK["ROS callbacks<br/>接收位姿、視覺與機構回授"]
+            CTX["RobotContext<br/>最新資料、時間戳、共享設定與 deadline"]
+            MISSION["MissionController：10 Hz tick<br/>檢查 → 等待 → 關卡切換 → 結束 / SAFE_STOP"]
+            S2["Stage2ClamFSM<br/>準備、推動、抬臂／收臂、返回"]
+            S3["Stage3HayFSM<br/>跨越、進排、掃描、夾取等待、退回、換排、放置"]
+            DIRECT["DirectTransition<br/>目標位置與 yaw 誤差 → 車體速度<br/>容差、穩定週期、逾時、資料過期停車"]
+            ROWCTRL["關卡內速度控制<br/>位姿／視覺對準、加減速、機構同步停車"]
+            MECH["機構命令發布<br/>MechanismCommand / 場地指令映射"]
+            HANDOFF["移動控制切換<br/>等待導航結束及速度沉降，再接手直接控速"]
+        end
+        subgraph NAVPKG["robot_navigation"]
+            NAVSERVER["navigation_server<br/>named pose 解析、action 結果、逾時／取消"]
+            ALIGN["fine_align<br/>Nav2 後的位姿精對位"]
+            RELOAD["/reload_named_poses<br/>Trigger service"]
+            MARKERS["named_poses_markers.py<br/>監看 YAML 更新"]
+            PLOT["plot_named_poses.py<br/>離線地圖＋點位＋名目移動 PNG"]
+        end
+        CMD["/cmd_vel<br/>當前控制流程的底盤速度"]
+        STMBRIDGE["stm_communication_node<br/>標準橋接：20 Hz 轉發，輸入過期送零"]
+        INTERFACES["robot_interfaces / straw_interfaces<br/>自訂 msg 與 NavigateToNamedPose.action"]
+    end
+
+    subgraph SLAMWS["tdk_slam_ws"]
+        DRIVERS["rplidar_ros：前／後 LiDAR 驅動"]
+        FILTERF["filter_front：角度與自身範圍過濾"]
+        FILTERR["filter_rear：角度與自身範圍過濾"]
+        MERGER["ira_laser_tools：laser_merger<br/>統一座標與合併掃描"]
+        CARTO["Cartographer pure localization<br/>pbstream + scan + odom"]
+        ODOMTF["odom_tf_broadcaster<br/>odom → base_footprint"]
+        STATIC["static_transform_publisher<br/>world → map"]
+        URDF["robot_state_publisher<br/>base_footprint → laser_front / laser_rear"]
+        TF["TF tree<br/>world → map → odom → base_footprint → sensors"]
+        POSEPUB["robot_pose_publisher<br/>查 TF，輸出 world 位姿"]
+        LOC["localization_manager<br/>軌跡重設、位姿驗證、清 costmap"]
+        MAPSERVER["map_server → /map<br/>lifecycle_manager 管理啟用"]
+        COSTMAP["Nav2 global / local costmaps<br/>地圖、掃描與 TF"]
+        BT["bt_navigator<br/>NavigateToPose 任務與回復流程"]
+        PLANNER["planner_server<br/>Smac2D 路徑規劃"]
+        CONTROLLER["controller_server<br/>MPPI Omni 路徑追蹤"]
+        BEHAVIOR["behavior_server<br/>Spin 等回復動作"]
+        SMOOTHER["velocity_smoother<br/>速度／加減速限制"]
+    end
+
+    subgraph VISIONWS["TDK-straw"]
+        DETECT["相機影像 → OpenCV HSV / 幾何分析<br/>目標有效性、角度與橫向誤差"]
+    end
+    subgraph HW["硬體與韌體"]
+        LIDAR["前／後 RPLiDAR"]
+        CAMERA["相機"]
+        CHASSIS["STM32 底盤<br/>速度執行與里程計"]
+        MECHANISM["STM32 機構<br/>動作執行與夾取回授"]
+    end
+
+    FIELD -.-> START & STATIC & LAUNCHER & NAVSERVER & MARKERS
+    FIELD -.-> MAPFILES & POSES & CTRL
+    START -.-> CARTO & LOC & MAPSERVER & BT & LAUNCHER & MARKERS
+    CTRL -.-> CTX
+    CTRL -. "mirror / DIT spin 倍率於 Nav2 啟動時載入" .-> BEHAVIOR & SMOOTHER
+    POSES -.-> NAVSERVER & DIRECT & MARKERS & PLOT
+    MAPFILES -. "pbstream" .-> CARTO
+    MAPFILES -. "YAML / PGM" .-> MAPSERVER & PLOT
+    INTERFACES -. "型別定義" .-> CALLBACK & NAVSERVER & MECH
+
+    BUTTON -->|"ROSLIB.js / Trigger service"| ROSBR
+    ROSBR -->|"/fsm/start_*、/fsm/stop、/fsm/reset_stage*"| LAUNCHER
+    LAUNCHER -->|"service success / message，經 rosbridge"| BUTTON
+    LAUNCHER -. "launch 參數：場地、路線、reset、deadline" .-> MISSION
+    LAUNCHER --> TIMER
+    TIMER -->|"/fsm/match_remaining"| ROSBR
+    BAT -->|"/host/battery"| ROSBR
+    ROSBR -->|"電量與剩餘秒數"| DISPLAY
+    ROSBR -->|"topic 訊息及 graph 查詢結果"| LIGHT
+    LAUNCHER -->|"STOP：零速度"| CMD
+    LAUNCHER -->|"CancelGoal：navigate_to_pose / navigate_through_poses"| BT
+
+    LIDAR --> DRIVERS
+    DRIVERS -->|"/front/scan"| FILTERF
+    DRIVERS -->|"/rear/scan"| FILTERR
+    FILTERF -->|"/front/scan_filtered"| MERGER
+    FILTERR -->|"/rear/scan_filtered"| MERGER
+    MERGER -->|"/scan"| CARTO & COSTMAP
+    CHASSIS -->|"里程計，經 Agent"| AGENT
+    AGENT -->|"/odom"| ODOMTF & CARTO & CONTROLLER & ROSBR
+    CARTO -->|"map → odom"| TF
+    ODOMTF --> TF
+    STATIC --> TF
+    URDF --> TF
+    TF --> POSEPUB & COSTMAP & MERGER & ALIGN
+    POSEPUB -->|"/robot_pose"| CALLBACK & LOC & ROSBR
+    MAPSERVER -->|"/map"| COSTMAP
+
+    CAMERA --> DETECT
+    DETECT -->|"/straw/target"| CALLBACK & ROSBR
+    MECHANISM -->|"夾取狀態，經 Agent"| AGENT
+    AGENT -->|"/mechanism/straw_pick_status"| CALLBACK & ROSBR
+    CALLBACK --> CTX
+    CTX --> MISSION & S2 & S3 & DIRECT & ROWCTRL
+    MISSION --> S2 & S3
+    S2 & S3 -->|"關卡完成／等待條件"| MISSION
+    MISSION & S2 & S3 -->|"命名導航目標"| NAVSERVER
+    MISSION & S2 & S3 --> HANDOFF
+    HANDOFF --> DIRECT & ROWCTRL
+    MISSION & S2 & S3 --> MECH
+    MECH -->|"/mechanism/command"| AGENT & ROSBR
+    AGENT -->|"機構指令"| MECHANISM
+    DIRECT & ROWCTRL --> CMD
+
+    RELOAD -->|"重新讀取 YAML"| NAVSERVER
+    NAVSERVER <-->|"/navigate_to_named_pose：goal / result"| MISSION
+    NAVSERVER -->|"/navigate_to_pose：goal / cancel"| BT
+    BT --> PLANNER & CONTROLLER & BEHAVIOR
+    COSTMAP --> PLANNER & CONTROLLER
+    PLANNER -->|"規劃路徑，經 BT"| CONTROLLER
+    CONTROLLER & BEHAVIOR -->|"/cmd_vel_nav"| SMOOTHER
+    BT -->|"導航結果"| NAVSERVER
+    NAVSERVER --> ALIGN
+    ALIGN -->|"/cmd_vel_nav"| SMOOTHER
+    NAVSERVER -->|"取消／逾時停車"| CMD
+    SMOOTHER -->|"cmd_vel_smoothed remap 至 /cmd_vel"| CMD
+    CMD --> STMBRIDGE
+    STMBRIDGE -->|"/mecanum/cmd_vel"| AGENT
+    AGENT -->|"底盤速度命令"| CHASSIS
+
+    MISSION -. "保留 /init_pose_cmd；目前啟動略過重定位" .-> LOC
+    LOC -. "/finish_trajectory、/start_trajectory" .-> CARTO
+    LOC -. "清除 costmap services" .-> COSTMAP
+    LOC -. "/init_pose_status" .-> CALLBACK
+
+    DRIVERS -->|"/front/scan、/rear/scan：燈號監控"| ROSBR
+    BT & MISSION -->|"rosapi：節點存在查詢"| ROSBR
+    LINK --> VIEW
+    TF & POSEPUB & MAPSERVER & MARKERS & DETECT -->|"ROS topics / TF"| FOX
+    MARKERS -->|"/named_poses_markers"| FOX
+    FOX -->|"Foxglove WebSocket"| VIEW
+```
+
+閱讀時可沿三條主線追蹤：**感測器 → 定位／視覺 → RobotContext → FSM 決策**、**FSM → Nav2 或直接控速 → 底盤 → 里程計回授**、**面板 → launcher → FSM 程序與倒數 → 面板監控**。圖中 Nav2 內部流程為功能摘要，實際節點間的路徑追蹤由 Nav2 actions 與 BT 協調。
+
+速度來源的切換由程式流程管理，並非額外的硬體仲裁器；FSM 接手前等待導航結束與 1.2 秒沉降，避免與 smoother 的剩餘輸出交錯。圖中的速度橋接為 `nav_cmd_bridge.launch.py` 標準配置，其他測試 launch 可以覆寫輸入與輸出 topic。
