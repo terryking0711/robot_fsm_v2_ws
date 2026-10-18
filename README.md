@@ -1,8 +1,21 @@
 # TDK 30th — Robot FSM
 
-TDK 30 屆競賽機器人的任務主程式，以 **ROS 2 Humble、C++ 與非阻塞有限狀態機（FSM）**，協調定位導航、視覺辨識及 STM32 機構控制，完成關卡移動、稻草收集與放置。
+TDK 30 屆競賽機器人的任務主程式，以 **ROS 2 Humble、C++ 與非阻塞有限狀態機（FSM）** 協調定位導航、視覺辨識及 STM32 機構控制，完成關卡移動、稻草收集與放置。
 
-本專案保留作為個人作品與後續開發參考。設計重點是把「任務順序」「移動控制」「機構與感知回授」分開管理，再由 FSM 決定何時執行、等待、切換或停車。以下以實機使用的第二、三關流程為主，其他 workspace 僅介紹與 FSM 的整合關係。
+本專案保留作為個人作品與後續開發參考。設計重點是把 **「任務順序」「移動控制」「機構與感知回授」** 分開管理，再由 FSM 決定何時執行、等待、切換或停車。以下以實機使用的第二、三關流程為主，其他 workspace 僅介紹與 FSM 的整合關係。
+
+## 目錄
+
+1. [整體系統架構](#1-整體系統架構)
+2. [套件與通訊](#2-套件與通訊)
+3. [移動控制](#3-移動控制)
+4. [開發與視覺化工具](#4-開發與視覺化工具)
+5. [快速啟動](#5-快速啟動)
+6. [FSM 實作細節](#6-fsm-實作細節)
+7. [介面一覽](#7-介面一覽)
+8. [整合架構與資料流](#8-整合架構與資料流)
+
+---
 
 ## 1. 整體系統架構
 
@@ -35,13 +48,25 @@ flowchart TB
     BRIDGE <-->|"速度命令 / 里程計"| STM
 ```
 
-FSM 是決策中心：根據目前關卡、導航結果、定位、視覺與機構狀態決定下一步。Nav2 與直接控速用於不同移動段落，依任務狀態切換；面板透過後端操作 FSM，底層定位、感測器與 micro-ROS 則由配套系統啟動。
+- **FSM 是決策中心**：根據目前關卡、導航結果、定位、視覺與機構狀態決定下一步。
+- **兩種移動方式**：Nav2 與直接控速用於不同移動段落，依任務狀態切換。
+- **面板與後端**：面板透過後端操作 FSM；底層定位、感測器與 micro-ROS 由配套系統啟動。
 
-## 2. 通訊、套件與跨 workspace 整合
+---
 
-### FSM 與套件分工
+## 2. 套件與通訊
 
-主程式以 **10 Hz tick** 推進狀態，每次只執行一小步；等待導航或機構時仍處理 ROS callbacks。`RobotContext` 保存最新回授與共用設定，`MissionController` 管理整體流程，第二、三關子 FSM 管理關卡內動作。
+### FSM 運作方式
+
+主程式以 **10 Hz tick** 推進狀態，每次只執行一小步；等待導航或機構時仍持續處理 ROS callbacks。
+
+| 元件 | 職責 |
+| --- | --- |
+| `RobotContext` | 保存最新回授與共用設定 |
+| `MissionController` | 管理整體流程 |
+| 第二、三關子 FSM | 管理關卡內動作 |
+
+### 套件分工
 
 | 套件 | 職責與主要技術 |
 | --- | --- |
@@ -63,13 +88,26 @@ FSM 是決策中心：根據目前關卡、導航結果、定位、視覺與機�
 
 <!-- 在此加入 TDK-straw 辨識圖片／實機影片 -->
 
-通訊依用途選擇：**topics** 傳送位姿、視覺、速度與機構狀態；**actions** 處理導航目標與結果；**services** 處理啟停、重置與點位重載；**TF** 統一場地、地圖、里程計與車體座標。STM32 透過 micro-ROS 參與 ROS 通訊。
+### 通訊方式
 
-### 移動控制：Nav2 與自行實作的閉迴路控速
+| 機制 | 用途 |
+| --- | --- |
+| **topics** | 位姿、視覺、速度與機構狀態 |
+| **actions** | 導航目標與結果 |
+| **services** | 啟停、重置與點位重載 |
+| **TF** | 統一場地、地圖、里程計與車體座標 |
+
+STM32 透過 micro-ROS 參與 ROS 通訊。
+
+---
+
+## 3. 移動控制
+
+### 從 Nav2 到閉迴路控速
 
 開發初期使用 Nav2 執行點位移動，但在本麥輪機器人與競賽場地上，移動表現不易調整到符合需求，調參成本高。後來針對固定點位與關卡移動實作 **`DirectTransition` 閉迴路控速**，在實機使用上更容易取得需要的移動表現。
 
-#### 使用 nav2 的實機效果
+#### 使用 Nav2 的實機效果
 
 https://github.com/user-attachments/assets/20d47f27-70ef-4f53-84d4-dda88f34d5d7
 
@@ -77,8 +115,14 @@ https://github.com/user-attachments/assets/20d47f27-70ef-4f53-84d4-dda88f34d5d7
 
 https://github.com/user-attachments/assets/02b318e7-a96c-47ff-a192-95f5787f165d
 
+### 控制器運作
 
-控制器持續讀取 `/robot_pose`，計算 world 座標下的位置與朝向誤差，再轉換成車體速度送到 `/cmd_vel`。可依目標設定速度上限、位置／角度容差、穩定週期與逾時策略，並依設定限制加減速、接近目標時減速。位姿過期時停車；達成條件後由 FSM 接續機構或下一段移動。
+- **誤差計算**：持續讀取 `/robot_pose`，計算 world 座標下的位置與朝向誤差。
+- **速度輸出**：轉換成車體速度送到 `/cmd_vel`。
+- **可調參數**：依目標設定速度上限、位置／角度容差、穩定週期與逾時策略；並可限制加減速、接近目標時減速。
+- **停止與銜接**：位姿過期時停車；達成條件後由 FSM 接續機構或下一段移動。
+
+### 控制方式比較
 
 | 控制方式 | 在 FSM 中的用途 |
 | --- | --- |
@@ -86,65 +130,108 @@ https://github.com/user-attachments/assets/02b318e7-a96c-47ff-a192-95f5787f165d
 | `DirectTransition` | 固定入口、轉角與放置點等段落，利用定位回授直接控制；mirror／DIT 多個段落採此方式 |
 | 關卡內控速 | 第三關掃排、換排與視覺對準，結合位姿、目標與機構回授決定速度及停車時機 |
 
-直接控速仍依賴定位品質與場地路徑安排，沒有 Nav2 同等的路徑規劃與動態避障功能。兩種方式由 FSM 依段落使用，這也是本專案從通用導航轉向任務導向控制的重要設計經驗。
+> [!NOTE]
+> 直接控速仍依賴定位品質與場地路徑安排，沒有 Nav2 同等的路徑規劃與動態避障功能。兩種方式由 FSM 依段落使用，這也是本專案從通用導航轉向任務導向控制的重要設計經驗。
 
 <!-- 在此加入 Nav2 與閉迴路控速的實機對比影片，可附場地與測試條件 -->
 
-## 3. 開發與視覺化工具
+---
+
+## 4. 開發與視覺化工具
 
 ### 地圖、點位與移動疊圖
 
-`plot_named_poses.py` 不需要啟動 ROS，讀取場地地圖、world/map 轉換、named poses 與部分 FSM 移動常數，輸出 PNG。需有 Python 的 PyYAML、Matplotlib 與 Pillow。
+`plot_named_poses.py` **不需要啟動 ROS**，讀取場地地圖、world/map 轉換、named poses 與部分 FSM 移動常數，輸出 PNG。
+
+依賴套件：PyYAML、Matplotlib、Pillow
 
 ```bash
 cd /workspaces/robot_fsm_v2_ws
-# 產生所有場地疊圖，或指定場地與輸出目錄
+
+# 產生所有場地疊圖
 python3 src/robot_navigation/scripts/plot_named_poses.py
+
+# 指定場地與輸出目錄
 python3 src/robot_navigation/scripts/plot_named_poses.py mirror dit -o /tmp/fsm_maps
+
 # 互動檢視；--full-map 可顯示整張地圖
 python3 src/robot_navigation/scripts/plot_named_poses.py mirror --show
 ```
 
-### mirror 場地的 named_pose 圖片
+#### mirror 場地的 named_pose 圖片
 ![image](https://hackmd.io/_uploads/B1ZBA8M3Gx.png)
 
-### normal 場地的 named_pose 圖片
+#### normal 場地的 named_pose 圖片
 ![image](https://hackmd.io/_uploads/Syz6RIG3Ge.png)
 
-圖中的定時移動是依控制常數估算的**名目軌跡**，掃排線為參考線，並非實機量測軌跡，也不保證涵蓋所有路線變體。適合檢查座標、朝向與動作方向，實際路徑仍需錄製定位資料驗證。
+> [!NOTE]
+> 圖中的定時移動是依控制常數估算的**名目軌跡**，掃排線為參考線，並非實機量測軌跡，也不保證涵蓋所有路線變體。適合檢查座標、朝向與動作方向，實際路徑仍需錄製定位資料驗證。
 
 <!-- 在此加入地圖＋座標點＋移動疊圖 -->
 
 ### Foxglove／Lichtblick 即時開發
 
-在 Foxglove 或 Lichtblick 選擇 Foxglove WebSocket，連線至 `ws://<機器人IP>:8767`。既有環境另提供 Lichtblick 網頁入口 `http://<機器人IP>:8080`；bridge 由配套 micro-ROS 容器堆疊啟動。
-#### 測試時的 foxglove 畫面
+| 工具 | 連線位址 |
+| --- | --- |
+| Foxglove WebSocket | `ws://<機器人IP>:8767` |
+| Lichtblick 網頁入口 | `http://<機器人IP>:8080` |
+
+在 Foxglove 或 Lichtblick 選擇 Foxglove WebSocket 連線即可；bridge 由配套 micro-ROS 容器堆疊啟動。
+
+#### 測試時的 Foxglove 畫面
 
 https://github.com/user-attachments/assets/51f5e700-f228-4988-a69a-81562ab84a24
 
-3D panel 的 display frame 設為 `world`，加入 `/map`、TF、`/robot_pose` 與 `/named_poses_markers`，即可對照地圖、機器人位置與目標點。點位 markers 可手動啟動：
+#### 3D panel 設定
+
+- Display frame 設為 `world`
+- 加入 `/map`、TF、`/robot_pose` 與 `/named_poses_markers`，即可對照地圖、機器人位置與目標點
+
+點位 markers 可手動啟動：
 
 ```bash
 python3 /workspaces/robot_fsm_v2_ws/src/robot_navigation/scripts/named_poses_markers.py \
   --ros-args -p field_side:=mirror
 ```
 
-此工具偵測 YAML 存檔後自動更新圖示；`/workspaces/start.sh` 已包含它，整合啟動時不必重複執行。**圖示更新不等於導航點位已重載**，`navigation_server` 另提供 `/reload_named_poses`。
+此工具偵測 YAML 存檔後會自動更新圖示；`/workspaces/start.sh` 已包含它，整合啟動時不必重複執行。
+
+> [!IMPORTANT]
+> **圖示更新不等於導航點位已重載**，需另外呼叫 `navigation_server` 的 `/reload_named_poses`。
 
 <!-- 在此加入 Foxglove／Lichtblick 開發畫面 -->
 
-## 4. 快速啟動
+---
 
-以下以既有 Docker 掛載路徑 `/workspaces` 為例，需要相關 workspace、地圖、場地設定與硬體環境。系統使用 `ROS_DOMAIN_ID=30`。
+## 5. 快速啟動
+
+### 環境需求
+
+- 以既有 Docker 掛載路徑 `/workspaces` 為例
+- 需要相關 workspace、地圖、場地設定與硬體環境
+- 系統使用 `ROS_DOMAIN_ID=30`
+
+### 建置
 
 ```bash
-# ROS 容器內：重新建置 FSM（會清除本 workspace 的 build/install/log）
+# ROS 容器內
 cd /workspaces/robot_fsm_v2_ws
 ./build_fsm.sh
 source ./use_fsm.sh
 ```
 
-整合使用時先啟動 `TDK MicroROS` 與視覺，再啟動 `TDK Loc_Normal`／`TDK Loc_Mirror`／`TDK Loc_DIT`，最後開啟 robot_panel 按對應 START。定位啟動腳本會帶起定位、Nav2、launcher 與點位 markers；START 再啟動 FSM 及 navigation_server。
+> [!WARNING]
+> `build_fsm.sh` 會清除本 workspace 的 `build/`、`install/`、`log/`。
+
+### 整合啟動（比賽使用）
+
+1. 啟動 `TDK MicroROS` 與視覺。
+2. 啟動 `TDK Loc_Normal`／`TDK Loc_Mirror`／`TDK Loc_DIT`：帶起定位、Nav2、launcher 與點位 markers。
+3. 開啟 robot_panel，按對應的 START：啟動 FSM 及 navigation_server。
+
+操作說明另見 [Robot Panel UI](https://github.com/terryking0711/robot_panel_ui)。
+
+### 直接 launch
 
 已有定位導航與通訊後端時，也可在容器內直接啟動：
 
@@ -154,11 +241,14 @@ source /workspaces/robot_fsm_v2_ws/use_fsm.sh
 ros2 launch robot_fsm robot_bringup.launch.py field_side:=mirror skip_stage2_arm:=true
 ```
 
-直接 launch 不會建立面板 launcher 的比賽倒數；比賽計時與 RESET 操作請使用面板整合入口。操作說明另見 [Robot Panel UI](https://github.com/terryking0711/robot_panel_ui)。
+> [!NOTE]
+> 直接 launch 不會建立面板 launcher 的比賽倒數；比賽計時與 RESET 操作請使用面板整合入口。
 
-## 5. FSM 與整體實作細節
+---
 
-### 任務流程與回授同步
+## 6. FSM 實作細節
+
+### 任務流程
 
 ```mermaid
 flowchart LR
@@ -172,12 +262,14 @@ flowchart LR
     PLACE --> END["任務結束"]
 ```
 
-- **頂層控制**：處理關卡切換、導航成功／失敗與停止條件，讓關卡子 FSM 專注於動作順序。目前啟動流程沿用既有 Cartographer 定位，`LOCALIZE` 狀態直接放行；程式保留定位初始化請求與結果介面。
-- **第二關**：機構準備、入口移動、推蛤蜊、抬臂／收臂與返回；實機面板使用 `skip_stage2_arm` 分支略過部分手臂流程。
-- **第三關**：初始化、跨越、進排、掃描對準、等待夾取、退回與換排，最後返回放置。移動與夾取回授互相約束，STM 狀態過期或仍在 PICKING 時停車等待。
-- **放置與時間管理**：收集期間剩餘時間小於 40 秒時停止找下一捲，等當次夾取完成，經 `stage3_place_approach` 再到 `stage3_place`。倒數歸零不會直接中斷機構動作。
+| 階段 | 說明 |
+| --- | --- |
+| **頂層控制** | 處理關卡切換、導航成功／失敗與停止條件，讓關卡子 FSM 專注於動作順序。目前啟動流程沿用既有 Cartographer 定位，`LOCALIZE` 狀態直接放行；程式保留定位初始化請求與結果介面。 |
+| **第二關** | 機構準備、入口移動、推蛤蜊、抬臂／收臂與返回；實機面板使用 `skip_stage2_arm` 分支略過部分手臂流程。 |
+| **第三關** | 初始化、跨越、進排、掃描對準、等待夾取、退回與換排，最後返回放置。移動與夾取回授互相約束，STM 狀態過期或仍在 PICKING 時停車等待。 |
+| **放置與時間管理** | 收集期間剩餘時間小於 40 秒時停止找下一捲，等當次夾取完成，經 `stage3_place_approach` 再到 `stage3_place`。倒數歸零不會直接中斷機構動作。 |
 
-第三關程式位於 `src/robot_fsm/src/stages/stage3_hay_fsm.cpp`，相關專門說明見 [STAGE3_README.md](STAGE3_README.md)；主流程與條件以目前程式為準。
+第三關程式位於 `src/robot_fsm/src/stages/stage3_hay_fsm.cpp`，相關說明見 [STAGE3_README.md](STAGE3_README.md)；主流程與條件以目前程式為準。
 
 ### 場地與控制設定
 
@@ -189,17 +281,27 @@ flowchart LR
 | 直接控速 | `direct_transition.<目標>`：速度、容差、穩定週期及逾時策略，支援段落的加減速設定 |
 | 掃排／換排 | `stage3_row_return_speed`、`stage3_row_return_slow_speed`、`stage3_row_shift_max_speed` 等；部分常數仍在 C++ header |
 
-normal／mirror 使用各自地圖與點位；DIT 為實驗室第三關測試場地。MIRROR V2 使用 mirror 地圖，改走第三關 row3 → row1 → row2，原 MIRROR 為 row4 → row3 → row2 → row1。
+### 場地模式
+
+| 模式 | 說明 |
+| --- | --- |
+| NORMAL | 使用 normal 地圖與點位 |
+| MIRROR | 使用 mirror 地圖與點位；第三關走 row4 → row3 → row2 → row1 |
+| MIRROR V2 | 使用 mirror 地圖；第三關改走 row3 → row1 → row2 |
+| DIT | 實驗室第三關測試場地 |
 
 ### RESET 與比賽倒數
 
-launcher 保存截止時間與路線選擇。STOP／RESET 持續扣除原倒數，RESET 不重建定位；S2 從第二關準備開始，S3 經轉角及第三關入口重新進關。重新 START 才設定新期限，重啟 launcher 則會遺失原有記憶體狀態。
-
-目前 normal／mirror 設為 240 秒，DIT 保留 120 秒測試設定，定義於 `fsm_launcher.py`；移植時可依需求修改。
+- launcher 保存截止時間與路線選擇。
+- **STOP／RESET**：持續扣除原倒數；RESET 不重建定位。
+  - **RESET S2**：從第二關準備開始。
+  - **RESET S3**：經轉角及第三關入口重新進關。
+- **重新 START** 才設定新期限；重啟 launcher 則會遺失原有記憶體狀態。
+- **比賽時間**：normal／mirror 設為 240 秒，DIT 保留 120 秒測試設定，定義於 `fsm_launcher.py`，移植時可依需求修改。
 
 ### TF tree 與座標約定
 
-命名點位與 FSM 定位目標使用 **world frame**，以場地左下角為原點。`world → map` 的平移與旋轉由場地設定提供；目前設定為 x=0.425 m、y=1.0 m、yaw=0。
+命名點位與 FSM 定位目標使用 **world frame**，以場地左下角為原點。`world → map` 的平移與旋轉由場地設定提供；目前設定為 `x = 0.425 m`、`y = 1.0 m`、`yaw = 0`。
 
 ```mermaid
 graph TD
@@ -211,6 +313,10 @@ graph TD
 ```
 
 定位與 TF 由 `tdk_slam_ws` 維護，FSM 利用轉換後的 `/robot_pose` 做控制。圖中保留實機使用的 odom TF 轉發方式。
+
+---
+
+## 7. 介面一覽
 
 ### 主要 topics
 
@@ -247,11 +353,20 @@ graph TD
 | `/fsm/stop` | `std_srvs/srv/Trigger` | 停止 FSM、取消導航並發送零速度 |
 | `/fsm/reset_stage2`、`/fsm/reset_stage3` | `std_srvs/srv/Trigger` | 保留定位、倒數與路線選擇，重啟指定關卡 |
 
-修改 YAML 後需讓對應節點重新載入；named poses 可使用重載 service，FSM 控制參數通常需重啟 FSM。`mirror_spin_speed_scale` 由 Nav2 啟動時讀取，因此修改後需重啟導航。修改 C++ 則需重新建置。
+### 修改設定後的生效方式
 
-## 6. 整合架構與資料流
+| 修改內容 | 生效方式 |
+| --- | --- |
+| named poses YAML | 呼叫 `/reload_named_poses` |
+| FSM 控制參數 YAML | 通常需重啟 FSM |
+| `mirror_spin_speed_scale` | 由 Nav2 啟動時讀取，需重啟導航 |
+| C++ 程式 | 需重新建置 |
 
-以下將實機 Cartographer 定位模式拆成三張圖：跨 repo 分工、移動回授及面板操作。詳細 topic 型別與服務名稱見前節介面表。
+---
+
+## 8. 整合架構與資料流
+
+以下將實機 Cartographer 定位模式拆成三張圖：跨 repo 分工、移動回授及面板操作。詳細 topic 型別與服務名稱見[介面一覽](#7-介面一覽)。
 
 ### 跨 repo 整合
 
@@ -307,7 +422,8 @@ flowchart TB
     DIRECT -->|"到位／逾時／等待"| FSM
 ```
 
-兩條控制路徑依 FSM 狀態切換；直接控速前等待導航結束及速度沉降，避免與 smoother 的剩餘輸出交錯。定位過期時直接控制停車；標準速度橋接也會在輸入過期時送零。
+- 兩條控制路徑依 FSM 狀態切換；直接控速前會等待導航結束及速度沉降，避免與 smoother 的剩餘輸出交錯。
+- 定位過期時直接控制停車；標準速度橋接也會在輸入過期時送零。
 
 ### 面板操作與開發監控
 
@@ -332,4 +448,6 @@ flowchart TB
     UI -. "ROBOT PANEL 連結" .-> VIEW
 ```
 
-START 設定新的比賽期限，STOP／RESET 保留原倒數與路線選擇。燈號依訊息新鮮度及 topic／節點存在判斷；Foxglove／Lichtblick 則供開發時檢查地圖、座標與即時資料。
+- **START** 設定新的比賽期限；**STOP／RESET** 保留原倒數與路線選擇。
+- 燈號依訊息新鮮度及 topic／節點存在判斷。
+- Foxglove／Lichtblick 供開發時檢查地圖、座標與即時資料。
