@@ -120,9 +120,7 @@ python3 src/robot_navigation/scripts/plot_named_poses.py mirror --show
 在 Foxglove 或 Lichtblick 選擇 Foxglove WebSocket，連線至 `ws://<機器人IP>:8767`。既有環境另提供 Lichtblick 網頁入口 `http://<機器人IP>:8080`；bridge 由配套 micro-ROS 容器堆疊啟動。
 #### 測試時的 foxglove 畫面
 
-
-https://github.com/user-attachments/assets/8f405bbf-3dc4-4d92-a229-3eca00532e06
-
+https://github.com/user-attachments/assets/51f5e700-f228-4988-a69a-81562ab84a24
 
 3D panel 的 display frame 設為 `world`，加入 `/map`、TF、`/robot_pose` 與 `/named_poses_markers`，即可對照地圖、機器人位置與目標點。點位 markers 可手動啟動：
 
